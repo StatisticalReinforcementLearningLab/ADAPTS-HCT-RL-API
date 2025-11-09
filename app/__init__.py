@@ -28,12 +28,12 @@ def create_app(config_class="config.Config"):
     app.rl_algorithm = FlatProbRLAlgorithm()
 
     # Register blueprints
-    from app.routes.user import user_blueprint
+    from app.routes.dyad import dyad_blueprint
     from app.routes.action import action_blueprint
     from app.routes.data import data_blueprint
     from app.routes.update import update_blueprint
 
-    app.register_blueprint(user_blueprint, url_prefix="/api/v1")
+    app.register_blueprint(dyad_blueprint, url_prefix="/api/v1")
     app.register_blueprint(action_blueprint, url_prefix="/api/v1")
     app.register_blueprint(data_blueprint, url_prefix="/api/v1")
     app.register_blueprint(update_blueprint, url_prefix="/api/v1")

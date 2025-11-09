@@ -7,7 +7,7 @@ import os
 import csv
 from threading import Thread
 from flask import Blueprint, current_app, request, jsonify
-from app.models import ModelParameters, StudyData, ModelUpdateRequests, User, Action
+from app.models import ModelParameters, StudyData, ModelUpdateRequests, Dyad, Action
 from app.algorithms.base import RLAlgorithm
 from app.extensions import db
 
@@ -25,7 +25,7 @@ def backup_tables(app):
 
     with app.app_context():
         # List all models to back up
-        models = [User, Action, StudyData, ModelUpdateRequests, ModelParameters]
+        models = [Dyad, Action, StudyData, ModelUpdateRequests, ModelParameters]
 
         for model in models:
             table_name = model.__tablename__
@@ -76,13 +76,14 @@ def process_update_request(
             # In this case, it is all the temperatures and the
             # reward values from the study data
             study_data = StudyData.query.all()
-            temperatures = [data.raw_context["temperature"] for data in study_data]
+            cur_vars = [data.raw_context["cur_var"] for data in study_data]
+            past3_vars = [data.raw_context["past3_vars"] for data in study_data]
             rewards = [data.reward for data in study_data]
 
             # Update the model parameters
             status, new_parameters = rl_algorithm.update(
                 {"probability_of_action": current_params.probability_of_action},
-                {"temperatures": temperatures, "rewards": rewards},
+                {"cur_vars": cur_vars, "past3_vars": past3_vars, "rewards": rewards},
             )
 
             if not status:

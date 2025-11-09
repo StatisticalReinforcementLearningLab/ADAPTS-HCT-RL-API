@@ -2,33 +2,36 @@ from app.extensions import db
 import datetime
 
 
-class User(db.Model):
+class Dyad(db.Model):
     """
-    Database table to store users.
+    Database table to store dyads.
     """
 
-    __tablename__ = "users"
+    __tablename__ = "dyads"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.String(255), unique=True, nullable=False)
+    dyad_id = db.Column(db.String(255), unique=True, nullable=False)
+    dyad_info = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
     def __init__(
         self,
-        user_id: str,
+        dyad_id: str,
+        dyad_info: dict,
         created_at: datetime.datetime = datetime.datetime.now().isoformat(),
     ):
         """
-        Initialize the User object.
+        Initialize the Dyad object.
         """
-        self.user_id = user_id
+        self.dyad_id = dyad_id
+        self.dyad_info = dyad_info
         self.created_at = created_at
 
     def __repr__(self):
         """
-        Return a string representation of the User object.
+        Return a string representation of the Dyad object.
         """
-        return f"<User user_id={self.user_id} created_at={self.created_at}>"
+        return f"<Dyad dyad_id={self.dyad_id} created_at={self.created_at}>"
 
 
 class Action(db.Model):
@@ -39,7 +42,7 @@ class Action(db.Model):
     __tablename__ = "actions"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.String(255), nullable=False)
+    dyad_id = db.Column(db.String(255), nullable=False)
     state = db.Column(db.JSON, nullable=True)
     decision_idx = db.Column(db.Integer, nullable=False)
     raw_context = db.Column(db.JSON, nullable=False)
@@ -54,7 +57,7 @@ class Action(db.Model):
 
     def __init__(
         self,
-        user_id: str,
+        dyad_id: str,
         action: int,
         state: dict,
         decision_idx: int,
@@ -68,7 +71,7 @@ class Action(db.Model):
         """
         Initialize the Action object.
         """
-        self.user_id = user_id
+        self.dyad_id = dyad_id
         self.action = action
         self.state = state
         self.decision_idx = decision_idx
@@ -83,7 +86,7 @@ class Action(db.Model):
         """
         Return a string representation of the Action object.
         """
-        return f"<Action user_id={self.user_id}, action={self.action}, state={self.state}, action_prob={self.action_prob}>"
+        return f"<Action dyad_id={self.dyad_id}, action={self.action}, state={self.state}, action_prob={self.action_prob}>"
 
 
 class ModelParameters(db.Model):
@@ -165,7 +168,7 @@ class StudyData(db.Model):
     __tablename__ = "study_data"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.String(255), nullable=False)
+    dyad_id = db.Column(db.String(255), nullable=False)
     decision_idx = db.Column(db.Integer, nullable=False)
     action = db.Column(db.Integer, nullable=False)
     action_prob = db.Column(db.Float, nullable=False)
@@ -178,7 +181,7 @@ class StudyData(db.Model):
 
     def __init__(
         self,
-        user_id: str,
+        dyad_id: str,
         decision_idx: int,
         action: int,
         action_prob: float,
@@ -192,7 +195,7 @@ class StudyData(db.Model):
         """
         Initialize the StudyData object.
         """
-        self.user_id = user_id
+        self.dyad_id = dyad_id
         self.decision_idx = decision_idx
         self.action = action
         self.action_prob = action_prob
@@ -207,4 +210,4 @@ class StudyData(db.Model):
         """
         Return a string representation of the StudyData object.
         """
-        return f"<StudyData user_id={self.user_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"
+        return f"<StudyData dyad_id={self.dyad_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"

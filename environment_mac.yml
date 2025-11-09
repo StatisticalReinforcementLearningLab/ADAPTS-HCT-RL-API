@@ -25,9 +25,6 @@ dependencies:
   - typing-extensions=4.12.2
   - typing_extensions=4.12.2
   - tzdata=2024b
-  - ucrt=10.0.22621.0 # Windows only
-  - vc=14.40
-  - vs2015_runtime=14.42.34433
   - wheel=0.44.0
   - xz=5.4.6
   - zlib=1.2.13

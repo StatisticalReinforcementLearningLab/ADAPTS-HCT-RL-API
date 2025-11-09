@@ -2,7 +2,7 @@ import logging
 import datetime
 from flask import Blueprint, request, jsonify, current_app
 from app.extensions import db
-from app.models import User, Action, ModelParameters, StudyData
+from app.models import Dyad, Action, ModelParameters, StudyData
 
 action_blueprint = Blueprint("action", __name__)
 
@@ -11,37 +11,41 @@ def check_fields(data: dict) -> tuple[bool, str]:
     """
     Check if the required fields are present in the data.
     """
-    if not data or "user_id" not in data or "timestamp" not in data:
-        return False, "user_id and timestamp are required."
+    if not data or "dyad_id" not in data or "timestamp" not in data:
+        return False, "dyad_id and timestamp are required."
 
-    if "decision_idx" not in data:
-        return False, "decision_idx is required."
-
-    if "context" not in data:
-        return False, "context is required."
-
-    if "temperature" not in data["context"]:
-        return False, "Invalid context. Temperature is required."
-
-    # Check field types
-    if not isinstance(data["user_id"], str):
-        return False, "user_id must be a string."
+    if not isinstance(data["dyad_id"], str):
+        return False, "dyad_id must be a string."
 
     if not isinstance(data["timestamp"], str) and not isinstance(
         data["timestamp"], datetime.datetime
     ):
         return False, "timestamp must be a string or datetime object."
 
+    if "decision_idx" not in data:
+        return False, "decision_idx is required."
+    
     if not isinstance(data["decision_idx"], int):
         return False, "decision_idx must be an integer."
+
+    if "context" not in data:
+        return False, "context is required."
 
     if not isinstance(data["context"], dict):
         return False, "context must be a dictionary."
 
-    if not isinstance(data["context"]["temperature"], float) and not isinstance(
-        data["context"]["temperature"], int
-    ):
-        return False, "temperature must be a float or int."
+    if "decision_type" not in data["context"]:
+        return False, "Invalid context. Decision type is required."
+
+    if data["context"]["decision_type"] not in ["aya_message", "cp_message", "dyad_game"]:
+        return False, "Invalid decision_type in context. Must be 'aya_message', 'cp_message', or 'dyad_game'."
+
+
+
+    # if not isinstance(data["context"]["temperature"], float) and not isinstance(
+    #     data["context"]["temperature"], int
+    # ):
+    #     return False, "temperature must be a float or int."
 
     return True, ""
 
@@ -49,8 +53,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @action_blueprint.route("/action", methods=["POST"])
 def request_action():
     """
-    Requests an action for a specific user based on context.
-    Currently assumes that the context is only temperature.
+    Requests an action for a specific dyad based on context.
     """
     try:
         data = request.get_json()
@@ -61,20 +64,20 @@ def request_action():
             return jsonify({"status": "failed", "message": error_message}), 400
 
         # Extract the data
-        user_id = data["user_id"]
+        dyad_id = data["dyad_id"]
         decision_idx = data["decision_idx"]
         context = data["context"]
         request_timestamp = data["timestamp"]
         received_timestamp_iso = datetime.datetime.now().isoformat()
 
-        # Check if the user exists in the database
-        user = User.query.filter_by(user_id=user_id).first()
-        if not user:
-            return jsonify({"status": "failed", "message": "User not found."}), 404
+        # Check if the dyad exists in the database
+        dyad = Dyad.query.filter_by(dyad_id=dyad_id).first()
+        if not dyad:
+            return jsonify({"status": "failed", "message": "Dyad not found."}), 404
 
-        # Check if decision_idx does not exist in the study data for the user
+        # Check if decision_idx does not exist in the study data for the dyad
         study_data = StudyData.query.filter_by(
-            user_id=user_id, decision_idx=decision_idx
+            dyad_id=dyad_id, decision_idx=decision_idx
         ).first()
         if study_data:
             return (
@@ -110,12 +113,12 @@ def request_action():
         # Get the action, action selection probability, and random state
         # used to generate the action
         action, prob, random_state = rl_algorithm.get_action(
-            user_id, state, {"probability": probability}, decision_idx
+            dyad_id, state, {"probability": probability}, decision_idx
         )
 
         # Save the action to the action database
         new_action = Action(
-            user_id=user_id,
+            dyad_id=dyad_id,
             action=action,
             state=state,
             decision_idx=decision_idx,
@@ -135,7 +138,7 @@ def request_action():
             jsonify(
                 {
                     "status": "success",
-                    "user_id": user_id,
+                    "dyad_id": dyad_id,
                     "state": state,
                     "action": action,
                     "action_prob": prob,

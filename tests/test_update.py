@@ -11,6 +11,18 @@ import time
 mock_app = Flask(__name__)
 callback_responses = []  # Store callback responses for verification
 
+test_dyad_json = {
+    "dyad_id": "test_dyad_123",
+    "cp_id": "test_cp_123",
+    "aya_id": "test_aya_123",
+    "consent_start_date": "2025-01-01",
+    "consent_end_date": "2025-01-01",
+    "AM_MTW": 7,
+    "PM_MTW": 17,
+    "AM_CPW": 7,
+    "PM_CPW": 17,
+}
+
 
 @mock_app.route("/callback", methods=["POST"])
 def callback():
@@ -44,20 +56,20 @@ def test_update_model_success(client):
     Tests updating the model successfully.
     """
 
-    # Add user
+    # Add dyad
     response = client.post(
-        "/api/v1/add_user",
-        json={"user_id": "test_user_123"},
+        "/api/v1/add_dyad",
+        json=test_dyad_json,
     )
 
     # Now request an action
     response = client.post(
         "/api/v1/action",
         json={
-            "user_id": "test_user_123",
+            "dyad_id": "test_dyad_123",
             "timestamp": "2025-01-01T12:00:00",
             "decision_idx": 0,
-            "context": {"temperature": 25.0},
+            "context": {"decision_type": "aya_message", "cur_var": 25.0, "past3_vars": [24.0, 23.0, 22.0]},
         },
     )
 
@@ -68,11 +80,11 @@ def test_update_model_success(client):
     response = client.post(
         "/api/v1/upload_data",
         json={
-            "user_id": "test_user_123",
+            "dyad_id": "test_dyad_123",
             "timestamp": "2025-01-01T12:00:00",
             "decision_idx": 0,
             "data": {
-                "context": {"temperature": 25.0},
+                "context": {"cur_var": 25.0, "past3_vars": [24.0, 23.0, 22.0]},
                 "action": response.json["action"],
                 "action_prob": response.json["action_prob"],
                 "state": response.json["state"],

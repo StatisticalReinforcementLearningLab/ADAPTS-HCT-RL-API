@@ -71,16 +71,17 @@ class FlatProbRLAlgorithm(RLAlgorithm):
             # Get the old parameters
             probability_of_action = old_params["probability_of_action"]
 
-            # Get the temperature from the data
-            temperature = data["temperatures"]
+            # Get the current variable and the past 3 variables from the data
+            # cur_var = data["cur_var"]
+            # past3_vars = data["past3_vars"]
 
             # For this example, we will either increase or decrease the probability
             # based on the average temperature. If it is less than 30, we increase
             # the probability by 0.01, otherwise we decrease it by 0.01.
-            if np.mean(temperature) < 30:
-                probability_of_action += 0.01
-            else:
-                probability_of_action -= 0.01
+            # if np.mean(temperature) < 30:
+            #     probability_of_action += 0.01
+            # else:
+            #     probability_of_action -= 0.01
 
             # Clipping the probability to be within the range [0.2, 0.8]
             probability_of_action = max(0.2, min(0.8, probability_of_action))
@@ -100,11 +101,10 @@ class FlatProbRLAlgorithm(RLAlgorithm):
         """
 
         # For the flat probability algorithm, there is no state
-        # But we return the temperature as a placeholder
-        # for the template
+        # But we return the current variable and the past 3 variables
 
         try:
-            state = [context["temperature"]]
+            state = [context["cur_var"]]
             return True, state
         except Exception as e:
             self.logger.error(f"Error in making state: {e}")

@@ -5,10 +5,27 @@ class Config:
     # General Configuration
     DEBUG = True
     TESTING = False
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "DATABASE_URL", "postgresql://myuser:mypassword@localhost:5432/mydatabase"
-    )
+    
+    # Database Configuration
+    # PostgreSQL connection string format: postgresql://username:password@host:port/database_name
+    # 
+    # For Mac users:
+    # 1. If using a dedicated PostgreSQL user:
+    #    "postgresql://justin_user:your_password@localhost:5432/justin_rl_db"
+    # 
+    # 2. If using your Mac username (no password for local connections):
+    #    "postgresql://your_mac_username@localhost:5432/justin_rl_db"
+    # 
+    # 3. Using environment variable (recommended for security):
+    #    Set DATABASE_URL in your shell: export DATABASE_URL="postgresql://..."
+    #    This will automatically be used instead of the default value below
+    #
+    # Default port for PostgreSQL is 5432. Change if your PostgreSQL uses a different port.
+    # SQLALCHEMY_DATABASE_URI = os.getenv(
+        # "DATABASE_URL", "postgresql://myuser:mypassword@localhost:5432/mydatabase"
+    # )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_DATABASE_URI = "postgresql://zipingxu@localhost:5432/justin_rl_db"
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_recycle": 3600,  # Recycle connections after 3600 seconds (1 hour)
     }
