@@ -7,7 +7,7 @@ import os
 import csv
 from threading import Thread
 from flask import Blueprint, current_app, request, jsonify
-from app.models import ModelParameters, StudyData, ModelUpdateRequests, Dyad, Action
+from app.models import ModelParameters, StudyData, ModelUpdateRequests, Group, Action
 from app.algorithms.base import RLAlgorithm
 from app.extensions import db
 
@@ -25,7 +25,7 @@ def backup_tables(app):
 
     with app.app_context():
         # List all models to back up
-        models = [Dyad, Action, StudyData, ModelUpdateRequests, ModelParameters]
+        models = [Group, Action, StudyData, ModelUpdateRequests, ModelParameters]
 
         for model in models:
             table_name = model.__tablename__

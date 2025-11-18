@@ -4,7 +4,7 @@ import uuid
 import requests
 from threading import Thread
 from flask import Blueprint, current_app, request, jsonify
-from app.models import Dyad, ModelParameters, StudyData, ModelUpdateRequests
+from app.models import Group, ModelParameters, StudyData, ModelUpdateRequests
 from app.algorithms.base import RLAlgorithm
 from app.extensions import db
 
@@ -15,8 +15,8 @@ def check_fields(data: dict) -> tuple[bool, str]:
     """
     Check if the required fields are present in the data.
     """
-    if not data or "dyad_id" not in data:
-        return False, "dyad_id is required."
+    if not data or "group_id" not in data:
+        return False, "group_id is required."
 
     if "decision_idx" not in data:
         return False, "decision_idx is required."
@@ -27,31 +27,31 @@ def check_fields(data: dict) -> tuple[bool, str]:
     if "data" not in data:
         return False, "data is required."
 
-    dyad_data = data["data"]
+    group_data = data["data"]
 
-    if not dyad_data or "context" not in dyad_data:
+    if not group_data or "context" not in group_data:
         return False, "context is required."
 
 
-    if "cur_var" not in dyad_data["context"]:
+    if "cur_var" not in group_data["context"]:
         return False, "Invalid context. cur_var is required."
 
-    if "past3_vars" not in dyad_data["context"]:
+    if "past3_vars" not in group_data["context"]:
         return False, "Invalid context. past3_vars is required."
 
-    if "action" not in dyad_data:
+    if "action" not in group_data:
         return False, "action is required."
 
-    if "action_prob" not in dyad_data:
+    if "action_prob" not in group_data:
         return False, "action_prob is required."
     
-    if "state" not in dyad_data:
+    if "state" not in group_data:
         return False, "state is required."
 
-    if "outcome" not in dyad_data:
+    if "outcome" not in group_data:
         return False, "outcome is required."
 
-    if "clicks" not in dyad_data["outcome"]:
+    if "clicks" not in group_data["outcome"]:
         return False, "Invalid outcome. Clicks is required."
 
     return True, ""
@@ -60,7 +60,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @data_blueprint.route("/upload_data", methods=["POST"])
 def upload_data():
     """
-    Uploads interaction data for a specific dyad, along with
+    Uploads interaction data for a specific group, along with
     the action sent and the timestamp (and associated metadata).
     """
     try:
@@ -71,20 +71,20 @@ def upload_data():
         if not fields_present:
             return jsonify({"status": "failed", "message": error_message}), 400
 
-        # Extract the dyad_id
-        dyad_id = data["dyad_id"]
+        # Extract the group_id
+        group_id = data["group_id"]
 
-        # Check if the dyad exists
-        dyad = Dyad.query.filter_by(dyad_id=dyad_id).first()
-        if not dyad:
-            return jsonify({"status": "failed", "message": "Dyad not found."}), 404
+        # Check if the group exists
+        group = Group.query.filter_by(group_id=group_id).first()
+        if not group:
+            return jsonify({"status": "failed", "message": "Group not found."}), 404
 
         # Extract the decision index
         decision_idx = data["decision_idx"]
 
         # Check if the decision index already exists
         study_data = StudyData.query.filter_by(
-            dyad_id=dyad_id, decision_idx=decision_idx
+            group_id=group_id, decision_idx=decision_idx
         ).first()
         if study_data:
             return (
@@ -96,25 +96,25 @@ def upload_data():
 
         # Extract the rest of the data
         request_timestamp = data["timestamp"]
-        dyad_data = data["data"]
-        context = dyad_data["context"]
-        action = dyad_data["action"]
-        action_prob = dyad_data["action_prob"]
-        state = dyad_data["state"]
-        outcome = dyad_data["outcome"]
+        group_data = data["data"]
+        context = group_data["context"]
+        action = group_data["action"]
+        action_prob = group_data["action_prob"]
+        state = group_data["state"]
+        outcome = group_data["outcome"]
 
         # Get the RL algorithm
         rl_algorithm = current_app.rl_algorithm
 
         # Create the reward based on the outcome
-        status, reward = rl_algorithm.make_reward(dyad_id, state, action, outcome)
+        status, reward = rl_algorithm.make_reward(group_id, state, action, outcome)
 
         if not status:
             return jsonify({"status": "failed", "message": "Reward creation failed."}), 400
 
         # Save the data to the database
         study_data = StudyData(
-            dyad_id=dyad_id,
+            group_id=group_id,
             decision_idx=decision_idx,
             action=action,
             action_prob=action_prob,
@@ -128,7 +128,7 @@ def upload_data():
         db.session.commit()
 
         # Log the completion
-        logging.info(f"[Upload Data] Data uploaded for dyad: {dyad_id}")
+        logging.info(f"[Upload Data] Data uploaded for group: {group_id}")
 
         return jsonify({"status": "success", "message": "Data uploaded successfully."}), 201
 

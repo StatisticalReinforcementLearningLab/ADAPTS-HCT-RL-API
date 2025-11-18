@@ -1,30 +1,25 @@
-test_dyad_json = {
-    "dyad_id": "test_dyad_123",
-    "cp_id": "test_cp_123",
-    "aya_id": "test_aya_123",
+test_group_json = {
+    "group_id": "test_group_123",
+    "member_list": ["member1", "member2"],
     "consent_start_date": "2025-01-01",
     "consent_end_date": "2025-01-01",
-    "AM_MTW": 7,
-    "PM_MTW": 17,
-    "AM_CPW": 7,
-    "PM_CPW": 17,
 }
 
 def test_upload_data_success(client):
     """
     Tests uploading interaction data successfully.
     """
-    # Add a dyad
+    # Add a group
     client.post(
-        "/api/v1/add_dyad",
-        json=test_dyad_json,
+        "/api/v1/add_group",
+        json=test_group_json,
     )
 
     # Upload data
     response = client.post(
         "/api/v1/upload_data",
         json={
-            "dyad_id": "test_dyad_123",
+            "group_id": "test_group_123",
             "timestamp": "2024-01-01T12:00:00Z",
             "decision_idx": 0,
             "data": {
@@ -43,14 +38,14 @@ def test_upload_data_success(client):
     assert response.json["message"] == "Data uploaded successfully."
 
 
-def test_upload_data_dyad_not_found(client):
+def test_upload_data_group_not_found(client):
     """
-    Tests uploading data for a non-existent dyad.
+    Tests uploading data for a non-existent group.
     """
     response = client.post(
         "/api/v1/upload_data",
         json={
-            "dyad_id": "non_existent_dyad",
+            "group_id": "non_existent_group",
             "timestamp": "2024-01-01T12:00:00Z",
             "decision_idx": 2,
             "data": {
@@ -65,4 +60,4 @@ def test_upload_data_dyad_not_found(client):
     print(response.json)
 
     assert response.status_code == 404
-    assert response.json["message"] == "Dyad not found."
+    assert response.json["message"] == "Group not found."

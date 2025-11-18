@@ -2,36 +2,36 @@ from app.extensions import db
 import datetime
 
 
-class Dyad(db.Model):
+class Group(db.Model):
     """
-    Database table to store dyads.
+    Database table to store groups.
     """
 
-    __tablename__ = "dyads"
+    __tablename__ = "groups"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    dyad_id = db.Column(db.String(255), unique=True, nullable=False)
-    dyad_info = db.Column(db.JSON, nullable=False)
+    group_id = db.Column(db.String(255), unique=True, nullable=False)
+    group_info = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
     def __init__(
         self,
-        dyad_id: str,
-        dyad_info: dict,
+        group_id: str,
+        group_info: dict,
         created_at: datetime.datetime = datetime.datetime.now().isoformat(),
     ):
         """
-        Initialize the Dyad object.
+        Initialize the Group object.
         """
-        self.dyad_id = dyad_id
-        self.dyad_info = dyad_info
+        self.group_id = group_id
+        self.group_info = group_info
         self.created_at = created_at
 
     def __repr__(self):
         """
-        Return a string representation of the Dyad object.
+        Return a string representation of the Group object.
         """
-        return f"<Dyad dyad_id={self.dyad_id} created_at={self.created_at}>"
+        return f"<Group group_id={self.group_id} created_at={self.created_at}>"
 
 
 class Action(db.Model):
@@ -42,9 +42,11 @@ class Action(db.Model):
     __tablename__ = "actions"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    dyad_id = db.Column(db.String(255), nullable=False)
+    group_id = db.Column(db.String(255), nullable=False)
+    rid = db.Column(db.String(255), unique=True, nullable=False)
     state = db.Column(db.JSON, nullable=True)
     decision_idx = db.Column(db.Integer, nullable=False)
+    decision_type = db.Column(db.String(255), nullable=False)
     raw_context = db.Column(db.JSON, nullable=False)
     action = db.Column(db.Integer, nullable=False)
     action_prob = db.Column(db.Float, nullable=False)
@@ -57,10 +59,12 @@ class Action(db.Model):
 
     def __init__(
         self,
-        dyad_id: str,
+        group_id: str,
         action: int,
+        rid: str,
         state: dict,
         decision_idx: int,
+        decision_type: str,
         raw_context: dict,
         action_prob: float,
         random_state: dict,
@@ -71,10 +75,12 @@ class Action(db.Model):
         """
         Initialize the Action object.
         """
-        self.dyad_id = dyad_id
+        self.group_id = group_id
         self.action = action
+        self.rid = rid
         self.state = state
         self.decision_idx = decision_idx
+        self.decision_type = decision_type
         self.raw_context = raw_context
         self.action_prob = action_prob
         self.random_state = random_state
@@ -86,7 +92,7 @@ class Action(db.Model):
         """
         Return a string representation of the Action object.
         """
-        return f"<Action dyad_id={self.dyad_id}, action={self.action}, state={self.state}, action_prob={self.action_prob}>"
+        return f"<Action rid={self.rid}, group_id={self.group_id}, action={self.action}, state={self.state}, action_prob={self.action_prob}>"
 
 
 class ModelParameters(db.Model):
@@ -168,7 +174,7 @@ class StudyData(db.Model):
     __tablename__ = "study_data"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    dyad_id = db.Column(db.String(255), nullable=False)
+    group_id = db.Column(db.String(255), nullable=False)
     decision_idx = db.Column(db.Integer, nullable=False)
     action = db.Column(db.Integer, nullable=False)
     action_prob = db.Column(db.Float, nullable=False)
@@ -181,7 +187,7 @@ class StudyData(db.Model):
 
     def __init__(
         self,
-        dyad_id: str,
+        group_id: str,
         decision_idx: int,
         action: int,
         action_prob: float,
@@ -195,7 +201,7 @@ class StudyData(db.Model):
         """
         Initialize the StudyData object.
         """
-        self.dyad_id = dyad_id
+        self.group_id = group_id
         self.decision_idx = decision_idx
         self.action = action
         self.action_prob = action_prob
@@ -210,4 +216,4 @@ class StudyData(db.Model):
         """
         Return a string representation of the StudyData object.
         """
-        return f"<StudyData dyad_id={self.dyad_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"
+        return f"<StudyData group_id={self.group_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"

@@ -1,8 +1,9 @@
 import logging
 import datetime
+import uuid
 from flask import Blueprint, request, jsonify, current_app
 from app.extensions import db
-from app.models import Dyad, Action, ModelParameters, StudyData
+from app.models import Group, Action, ModelParameters, StudyData
 
 action_blueprint = Blueprint("action", __name__)
 
@@ -11,11 +12,11 @@ def check_fields(data: dict) -> tuple[bool, str]:
     """
     Check if the required fields are present in the data.
     """
-    if not data or "dyad_id" not in data or "timestamp" not in data:
-        return False, "dyad_id and timestamp are required."
+    if not data or "group_id" not in data or "timestamp" not in data:
+        return False, "group_id and timestamp are required."
 
-    if not isinstance(data["dyad_id"], str):
-        return False, "dyad_id must be a string."
+    if not isinstance(data["group_id"], str):
+        return False, "group_id must be a string."
 
     if not isinstance(data["timestamp"], str) and not isinstance(
         data["timestamp"], datetime.datetime
@@ -37,15 +38,9 @@ def check_fields(data: dict) -> tuple[bool, str]:
     if "decision_type" not in data["context"]:
         return False, "Invalid context. Decision type is required."
 
-    if data["context"]["decision_type"] not in ["aya_message", "cp_message", "dyad_game"]:
-        return False, "Invalid decision_type in context. Must be 'aya_message', 'cp_message', or 'dyad_game'."
+    if data["context"]["decision_type"] not in ["aya_message", "cp_message", "group_game"]:
+        return False, "Invalid decision_type in context. Must be 'aya_message', 'cp_message', or 'group_game'."
 
-
-
-    # if not isinstance(data["context"]["temperature"], float) and not isinstance(
-    #     data["context"]["temperature"], int
-    # ):
-    #     return False, "temperature must be a float or int."
 
     return True, ""
 
@@ -53,7 +48,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @action_blueprint.route("/action", methods=["POST"])
 def request_action():
     """
-    Requests an action for a specific dyad based on context.
+    Requests an action for a specific group based on context.
     """
     try:
         data = request.get_json()
@@ -64,20 +59,21 @@ def request_action():
             return jsonify({"status": "failed", "message": error_message}), 400
 
         # Extract the data
-        dyad_id = data["dyad_id"]
-        decision_idx = data["decision_idx"]
+        group_id = data["group_id"]
+        decision_idx = data["decision_idx"] # RL won't use. For checking or validation
         context = data["context"]
+        decision_type = context["decision_type"]
         request_timestamp = data["timestamp"]
         received_timestamp_iso = datetime.datetime.now().isoformat()
 
-        # Check if the dyad exists in the database
-        dyad = Dyad.query.filter_by(dyad_id=dyad_id).first()
-        if not dyad:
-            return jsonify({"status": "failed", "message": "Dyad not found."}), 404
+        # Check if the group exists in the database
+        group = Group.query.filter_by(group_id=group_id).first()
+        if not group:
+            return jsonify({"status": "failed", "message": "Group not found."}), 404
 
-        # Check if decision_idx does not exist in the study data for the dyad
+        # Check if decision_idx does not exist in the study data for the group
         study_data = StudyData.query.filter_by(
-            dyad_id=dyad_id, decision_idx=decision_idx
+            group_id=group_id, decision_idx=decision_idx
         ).first()
         if study_data:
             return (
@@ -113,15 +109,19 @@ def request_action():
         # Get the action, action selection probability, and random state
         # used to generate the action
         action, prob, random_state = rl_algorithm.get_action(
-            dyad_id, state, {"probability": probability}, decision_idx
+            group_id, state, {"probability": probability}, decision_idx
         )
+
+        rid = str(uuid.uuid4())[:8]
 
         # Save the action to the action database
         new_action = Action(
-            dyad_id=dyad_id,
+            group_id=group_id,
             action=action,
+            rid=rid,
             state=state,
             decision_idx=decision_idx,
+            decision_type=decision_type,
             raw_context=context,
             action_prob=prob,
             random_state=random_state,
@@ -138,11 +138,13 @@ def request_action():
             jsonify(
                 {
                     "status": "success",
-                    "dyad_id": dyad_id,
+                    "message": "Action requested successfully.",
+                    "group_id": group_id,
                     "state": state,
                     "action": action,
                     "action_prob": prob,
                     "timestamp": received_timestamp_iso,
+                    "rid": rid,
                 }
             ),
             201,
