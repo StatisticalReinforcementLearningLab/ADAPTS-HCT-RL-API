@@ -87,12 +87,28 @@ This template utilizes PostgreSQL as the database backend.
 2. **Create and activate the conda environment**:
 
     ```sh
+    # Windows
     conda env create -f environment.yml
+    # Mac
+    conda env create -f environment_mac.yml
     conda activate justin_rl_api
     ```
 
 3. **Configure the database**:
-    Setup a PostgreSQL database and create a new database for the application.
+    Setup a PostgreSQL database ([download](https://www.postgresql.org/download/ )) and create a new database for the application.
+
+    Create a database
+    ```sh
+    # in shell
+    psql -U postgres
+
+    # in psql
+    CREATE DATABASE your_db_name;
+
+    ```
+
+
+
     Update the database connection string in ```config.py```. For PostgreSQL, the string looks like:
 
     ```sh
