@@ -4,6 +4,7 @@ import uuid
 from flask import Blueprint, request, jsonify, current_app
 from app.extensions import db
 from app.models import Group, Action, ModelParameters, StudyData
+from app.routes.data import upload_data
 
 action_blueprint = Blueprint("action", __name__)
 
@@ -26,6 +27,15 @@ def check_fields(data: dict) -> tuple[bool, str]:
     if "decision_idx" not in data:
         return False, "decision_idx is required."
     
+    if "decision_type" not in data:
+        return False, "decision_type is required."
+    
+    if not isinstance(data["decision_type"], str):
+        return False, "decision_type must be a string."
+    
+    if data["decision_type"] not in ["aya_message", "cp_message", "dyad_game"]:
+        return False, "Invalid decision_type. Must be 'aya_message', 'cp_message', or 'dyad_game'."
+    
     if not isinstance(data["decision_idx"], int):
         return False, "decision_idx must be an integer."
 
@@ -34,13 +44,12 @@ def check_fields(data: dict) -> tuple[bool, str]:
 
     if not isinstance(data["context"], dict):
         return False, "context must be a dictionary."
-
-    if "decision_type" not in data["context"]:
-        return False, "Invalid context. Decision type is required."
-
-    if data["context"]["decision_type"] not in ["aya_message", "cp_message", "group_game"]:
-        return False, "Invalid decision_type in context. Must be 'aya_message', 'cp_message', or 'group_game'."
-
+    
+    if "cur_var" not in data["context"]:
+        return False, "Invalid context. cur_var is required."
+    
+    if "past3_vars" not in data["context"]:
+        return False, "Invalid context. past3_vars is required."
 
     return True, ""
 
@@ -62,7 +71,7 @@ def request_action():
         group_id = data["group_id"]
         decision_idx = data["decision_idx"] # RL won't use. For checking or validation
         context = data["context"]
-        decision_type = context["decision_type"]
+        decision_type = data["decision_type"]
         request_timestamp = data["timestamp"]
         received_timestamp_iso = datetime.datetime.now().isoformat()
 
@@ -133,6 +142,23 @@ def request_action():
         # Save the action to the database
         db.session.add(new_action)
         db.session.commit()
+
+        # Upload the data to the database
+        study_data = {
+            "group_id": group_id,
+            "decision_idx": decision_idx,
+            "decision_type": decision_type,
+            "timestamp": received_timestamp_iso,
+            "data": {
+                "context": context,
+                "action": action,
+                "action_prob": prob,
+                "state": state,
+            },
+        }
+        status, message = upload_data(study_data)
+        if not status:
+            return jsonify({"status": "failed", "message": message}), 500
 
         return (
             jsonify(

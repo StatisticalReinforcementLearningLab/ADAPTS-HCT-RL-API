@@ -10,6 +10,24 @@ from app.extensions import db
 
 data_blueprint = Blueprint("data", __name__)
 
+# Example data field:
+example_study_data = {
+    "group_id": "example_group_001",
+    "decision_idx": 0,
+    "decision_type": "aya_message",
+    "timestamp": "2024-01-01T12:00:00Z",
+    "data": {
+        "context": {
+            "cur_var": 25,
+            "past3_vars": [24.5, 23.0, 22.5]
+        },
+        "action": 1,
+        "action_prob": 0.65,
+        "state": [25, 24.5, 23.0, 22.5],
+    }
+}
+
+
 
 def check_fields(data: dict) -> tuple[bool, str]:
     """
@@ -20,6 +38,15 @@ def check_fields(data: dict) -> tuple[bool, str]:
 
     if "decision_idx" not in data:
         return False, "decision_idx is required."
+    if "decision_type" not in data:
+        return False, "decision_type is required."
+    
+    if not isinstance(data["decision_type"], str):
+        return False, "decision_type must be a string."
+    
+    if data["decision_type"] not in ["aya_message", "cp_message", "dyad_game"]:
+        return False, "Invalid decision_type. Must be 'aya_message', 'cp_message', or 'dyad_game'."
+    
 
     if "timestamp" not in data:
         return False, "timestamp is required."
@@ -47,24 +74,17 @@ def check_fields(data: dict) -> tuple[bool, str]:
     
     if "state" not in group_data:
         return False, "state is required."
-
-    if "outcome" not in group_data:
-        return False, "outcome is required."
-
-    if "clicks" not in group_data["outcome"]:
-        return False, "Invalid outcome. Clicks is required."
-
     return True, ""
 
 
-@data_blueprint.route("/upload_data", methods=["POST"])
-def upload_data():
+# @data_blueprint.route("/upload_data", methods=["POST"])
+def upload_data(data: dict):
     """
     Uploads interaction data for a specific group, along with
     the action sent and the timestamp (and associated metadata).
     """
     try:
-        data = request.get_json()
+        # data = request.get_json()
 
         # Check if the required fields are present
         fields_present, error_message = check_fields(data)
@@ -102,7 +122,7 @@ def upload_data():
         action_prob = group_data["action_prob"]
         state = group_data["state"]
         outcome = group_data["outcome"]
-
+        decision_type = data["decision_type"]
         # Get the RL algorithm
         rl_algorithm = current_app.rl_algorithm
 
