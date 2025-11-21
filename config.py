@@ -1,5 +1,7 @@
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class Config:
     # General Configuration
@@ -25,7 +27,7 @@ class Config:
         # "DATABASE_URL", "postgresql://myuser:mypassword@localhost:5432/mydatabase"
     # )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_DATABASE_URI = "postgresql://zipingxu@localhost:5432/justin_rl_db"
+    SQLALCHEMY_DATABASE_URI = os.getenv('SQLALCHEMY_DATABASE_URI') or "postgresql://zipingxu@localhost:5432/justin_rl_db"
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_recycle": 3600,  # Recycle connections after 3600 seconds (1 hour)
     }

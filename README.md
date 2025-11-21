@@ -107,12 +107,10 @@ This template utilizes PostgreSQL as the database backend.
 
     ```
 
-
-
-    Update the database connection string in ```config.py```. For PostgreSQL, the string looks like:
+    Create a file ".env" at the root folder of your project and add the database connection string. For PostgreSQL, the string looks like:
 
     ```sh
-    SQLALCHEMY_DATABASE_URI = "postgresql://<username>:<password>@<host>:<port>/<database>"
+    SQLALCHEMY_DATABASE_URI="postgresql://<username>:<password>@<host>:<port>/<database>"
     ```
 
 4. **Initialize the database**:
