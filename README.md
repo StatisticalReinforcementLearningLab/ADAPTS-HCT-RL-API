@@ -41,9 +41,9 @@ JustIn_RL_API/
 │   │   └── flat_prob.py     # Demonstration implementation of a flat fixed probability algorithm.
 │   ├── routes/              # API endpoint definitions.
 │   │   ├── action.py        # Endpoints for action requests.
-│   │   ├── data.py          # Endpoints for uploading user interaction data.
+│   │   ├── data.py          # Endpoints for uploading user interaction data. Automatically triggered by action endpoint
 │   │   ├── update.py        # Endpoints for model updates.
-│   │   └── group.py          # Endpoints for group management.
+│   │   └── group.py         # Endpoints for registering a group.
 │   ├── models.py            # Database models defining users, actions, model parameters, and study data.
 │   ├── logging_config.py    # Configures detailed logging for debugging and application monitoring.
 │   └── extensions.py        # Configures Flask extensions like SQLAlchemy and migrations.
@@ -53,7 +53,6 @@ JustIn_RL_API/
 ├── tests/                   # Comprehensive test suite for ensuring application reliability.
 │   ├── conftest.py          # Shared fixtures and configurations for tests.
 │   ├── test_actions.py      # Tests for the action-related routes.
-│   ├── test_data.py         # Tests for data upload functionality.
 │   ├── test_update.py       # Tests for model update endpoints.
 │   └── test_group.py        # Tests for group management endpoints.
 │

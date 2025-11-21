@@ -8,8 +8,8 @@ test_data_json = {
     "group_id": "test_group_123",
     "timestamp": "2025-01-01T12:00:00",
     "decision_idx": 0,
+    "decision_type": "aya_message",
     "context": {
-        "decision_type": "aya_message",
         "cur_var": 1,
         "past3_vars": [1, 2, 3],
     }
@@ -79,12 +79,12 @@ def test_check_fields_context_not_dict():
     assert not result
     assert "context must be a dictionary." in error_message
 
-def test_check_fields_decision_type_not_in_list():
+def test_check_fields_decision_type_invalid():
     data = deepcopy(test_data_json)
-    data["context"]["decision_type"] = "a string"
+    data["decision_type"] = "an invalid_decision_type"
     result, error_message = check_fields(data)
     assert not result
-    assert "Invalid decision_type in context. Must be 'aya_message', 'cp_message', or 'group_game'." in error_message
+    assert "Invalid decision_type. Must be 'aya_message', 'cp_message', or 'dyad_game'." in error_message
 
 def test_check_fields_valid():
     data = deepcopy(test_data_json)
