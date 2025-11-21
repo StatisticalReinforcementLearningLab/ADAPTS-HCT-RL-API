@@ -23,16 +23,17 @@ class FlatProbRLAlgorithm(RLAlgorithm):
         self.logger.info("Flat Probability RL Algorithm initialized.")
 
     def get_action(
-        self, user_id: str, state: dict, parameters: dict, decision_idx: int
+        self, group_id: str, state: dict, parameters: dict, decision_type: str, decision_idx: int
     ) -> tuple[int, float, dict]:
         """
-        Generate an action based on the state and user_id.
+        Generate an action based on the state, group_id, decision_type, and decision_idx.
         """
-        # Flat probability, so we ignore the state, user_id, and decision_idx
+        # Flat probability, so we ignore the state, group_id, decision_type, and decision_idx
         self.logger.info(
-            "Getting action for user_id=%s with state=%s at decision_idx=%d",
-            user_id,
+            "Getting action for group_id=%s with state=%s at decision_type=%s and decision_idx=%d",
+            group_id,
             state,
+            decision_type,
             decision_idx,
         )
 
@@ -48,9 +49,9 @@ class FlatProbRLAlgorithm(RLAlgorithm):
 
         # Log the generated action
         self.logger.info(
-            "Generated action=%d for user_id=%s with probability=%f",
+            "Generated action=%d for group_id=%s with probability=%f",
             action,
-            user_id,
+            group_id,
             probability,
         )
 

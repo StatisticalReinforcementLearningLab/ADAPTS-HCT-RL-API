@@ -78,7 +78,7 @@ def request_action():
         if study_data:
             return (
                 jsonify(
-                    {"status": "failed", "message": "Decision index already exists."}
+                    {"status": "failed", "message": "Decision index already exists for this group."}
                 ),
                 400,
             )
@@ -109,7 +109,7 @@ def request_action():
         # Get the action, action selection probability, and random state
         # used to generate the action
         action, prob, random_state = rl_algorithm.get_action(
-            group_id, state, {"probability": probability}, decision_idx
+            group_id, state, {"probability": probability}, decision_type, decision_idx
         )
 
         rid = str(uuid.uuid4())[:8]

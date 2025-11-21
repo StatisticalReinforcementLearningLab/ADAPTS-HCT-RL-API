@@ -43,7 +43,7 @@ JustIn_RL_API/
 │   │   ├── action.py        # Endpoints for action requests.
 │   │   ├── data.py          # Endpoints for uploading user interaction data.
 │   │   ├── update.py        # Endpoints for model updates.
-│   │   └── user.py          # Endpoints for user management.
+│   │   └── group.py          # Endpoints for group management.
 │   ├── models.py            # Database models defining users, actions, model parameters, and study data.
 │   ├── logging_config.py    # Configures detailed logging for debugging and application monitoring.
 │   └── extensions.py        # Configures Flask extensions like SQLAlchemy and migrations.
@@ -55,7 +55,7 @@ JustIn_RL_API/
 │   ├── test_actions.py      # Tests for the action-related routes.
 │   ├── test_data.py         # Tests for data upload functionality.
 │   ├── test_update.py       # Tests for model update endpoints.
-│   └── test_users.py        # Tests for user management endpoints.
+│   └── test_group.py        # Tests for group management endpoints.
 │
 ├── config.py                # Application configuration
 ├── run.py                   # Application entry point
