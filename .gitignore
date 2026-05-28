@@ -1,7 +1,13 @@
+.env
 logs/
 .vscode/
 __pycache__/
 *.pyc
 .pytest_cache/
 backups/
-.env
+exports/
+.DS_Store
+nohup.out
+buffers/
+repro_snapshots/
+*.pdf

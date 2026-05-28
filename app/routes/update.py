@@ -7,9 +7,19 @@ import os
 import csv
 from threading import Thread
 from flask import Blueprint, current_app, request, jsonify
-from app.models import ModelParameters, StudyData, ModelUpdateRequests, Group, Action
+from app.models import (
+    ModelParameters,
+    StudyData,
+    ModelUpdateRequests,
+    Group,
+    Action,
+    ThompsonSamplingParams,
+    EmpiricalBayesSnapshot,
+    UpdateReproducibilitySnapshot,
+)
 from app.algorithms.base import RLAlgorithm
 from app.extensions import db
+from app.repro_snapshot import save_pre_update_repro_snapshot
 
 update_blueprint = Blueprint("update", __name__)
 
@@ -25,7 +35,16 @@ def backup_tables(app):
 
     with app.app_context():
         # List all models to back up
-        models = [Group, Action, StudyData, ModelUpdateRequests, ModelParameters]
+        models = [
+            Group,
+            Action,
+            StudyData,
+            ModelUpdateRequests,
+            ModelParameters,
+            ThompsonSamplingParams,
+            EmpiricalBayesSnapshot,
+            UpdateReproducibilitySnapshot,
+        ]
 
         for model in models:
             table_name = model.__tablename__
@@ -73,17 +92,47 @@ def process_update_request(
             ).first()
 
             # Get the data required for the update
-            # In this case, it is all the temperatures and the
-            # reward values from the study data
-            study_data = StudyData.query.all()
-            cur_vars = [data.raw_context["cur_var"] for data in study_data]
-            past3_vars = [data.raw_context["past3_vars"] for data in study_data]
-            rewards = [data.reward for data in study_data]
+            study_data = StudyData.query.order_by(
+                StudyData.decision_type.asc(),
+                StudyData.group_id.asc(),
+                StudyData.decision_idx.asc(),
+            ).all()
 
-            # Update the model parameters
+            records = []
+            current_index = {}
+            for row in study_data:
+                agent_idx = int(row.raw_context.get("agent_decision_index", row.decision_idx + 1))
+                records.append(
+                    {
+                        "group_id": row.group_id,
+                        "decision_idx": row.decision_idx,
+                        "decision_type": row.decision_type,
+                        "agent_decision_index": agent_idx,
+                        "state": row.state,
+                        "action": row.action,
+                        "reward": row.reward,
+                        "raw_context": row.raw_context,
+                        "outcome": row.outcome,
+                    }
+                )
+                current_index[row.decision_type] = max(
+                    current_index.get(row.decision_type, 0), agent_idx
+                )
+
+            update_data = {
+                "records": records,
+                "current_index": current_index,
+            }
+
+            snap_dir = save_pre_update_repro_snapshot(
+                app, update_id, current_params.id if current_params else None
+            )
+            if snap_dir:
+                app.logger.info("Pre-update reproducibility snapshot: %s", snap_dir)
+
             status, new_parameters = rl_algorithm.update(
                 {"probability_of_action": current_params.probability_of_action},
-                {"cur_vars": cur_vars, "past3_vars": past3_vars, "rewards": rewards},
+                update_data,
             )
 
             if not status:
@@ -102,7 +151,7 @@ def process_update_request(
                 update_id=update_id
             ).first()
             model_update_request.status = "completed"
-            model_update_request.completed_at = datetime.datetime.now().isoformat()
+            model_update_request.completed_at = datetime.datetime.now()
             db.session.commit()
 
             # Send a callback to the callback URL
@@ -129,7 +178,7 @@ def process_update_request(
                 update_id=update_id
             ).first()
             model_update_request.status = "failed"
-            model_update_request.completed_at = datetime.datetime.now().isoformat()
+            model_update_request.completed_at = datetime.datetime.now()
             model_update_request.error_message = str(e)
             db.session.commit()
 
@@ -175,6 +224,8 @@ def update_model():
 
         # Extract the data
         request_timestamp = data["timestamp"]
+        if isinstance(request_timestamp, str):
+            request_timestamp = datetime.datetime.fromisoformat(request_timestamp)
         callback_url = data["callback_url"]
 
         # Get the RL algorithm

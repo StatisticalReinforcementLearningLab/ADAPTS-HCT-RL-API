@@ -9,10 +9,12 @@ class RLAlgorithm(ABC):
         pass
 
     @abstractmethod
-    def get_action(self, user_id, state, parameters, decision_idx) -> tuple:
+    def get_action(self, group_id, state, parameters, decision_type, decision_idx) -> tuple:
         """
-        Generate an action based on the given user_id, state, decision index
+        Generate an action based on the given group_id, state, decision type, decision index
         and model parameters. Return the action, probability of the action.
+        decision_type is the type of decision to be made.
+        decision_idx is the index of the decision to be made.
         """
         pass
 
