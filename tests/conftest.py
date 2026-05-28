@@ -4,10 +4,7 @@ from app import create_app, db
 @pytest.fixture
 def app():
     """Create and configure a new app instance for each test."""
-    app_instance = create_app()
-
-    # Use the testing configuration
-    app_instance.config.from_object("config.TestingConfig")
+    app_instance = create_app("config.TestingConfig")
 
     with app_instance.app_context():
         # Initialize database or other setup here if needed

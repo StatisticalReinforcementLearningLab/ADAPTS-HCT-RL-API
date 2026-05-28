@@ -5,6 +5,11 @@ import datetime
 class Group(db.Model):
     """
     Database table to store groups.
+
+    `warmup`: when True, the algorithm bypasses the learner and returns a
+    purely-randomized action (Bernoulli(0.5)) for every decision for this
+    dyad. The first 5 dyads in the trial are flagged warmup so that the
+    EB prior can be estimated from their data (main.tex §2 Warming-up).
     """
 
     __tablename__ = "groups"
@@ -12,26 +17,34 @@ class Group(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     group_id = db.Column(db.String(255), unique=True, nullable=False)
     group_info = db.Column(db.JSON, nullable=False)
+    warmup = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
     def __init__(
         self,
         group_id: str,
         group_info: dict,
-        created_at: datetime.datetime = datetime.datetime.now().isoformat(),
+        warmup: bool = False,
+        created_at: datetime.datetime | None = None,
     ):
         """
         Initialize the Group object.
         """
+        if created_at is None:
+            created_at = datetime.datetime.now()
         self.group_id = group_id
         self.group_info = group_info
+        self.warmup = bool(warmup)
         self.created_at = created_at
 
     def __repr__(self):
         """
         Return a string representation of the Group object.
         """
-        return f"<Group group_id={self.group_id} created_at={self.created_at}>"
+        return (
+            f"<Group group_id={self.group_id} warmup={self.warmup} "
+            f"created_at={self.created_at}>"
+        )
 
 
 class Action(db.Model):
@@ -70,11 +83,13 @@ class Action(db.Model):
         random_state: dict,
         model_parameters_id: int,
         request_timestamp: datetime.datetime,
-        timestamp: datetime.datetime = datetime.datetime.now().isoformat(),
+        timestamp: datetime.datetime | None = None,
     ):
         """
         Initialize the Action object.
         """
+        if timestamp is None:
+            timestamp = datetime.datetime.now()
         self.group_id = group_id
         self.action = action
         self.rid = rid
@@ -111,11 +126,13 @@ class ModelParameters(db.Model):
     def __init__(
         self,
         probability_of_action: float,
-        timestamp: datetime.datetime = datetime.datetime.now().isoformat(),
+        timestamp: datetime.datetime | None = None,
     ):
         """
         Initialize the ModelParameters object.
         """
+        if timestamp is None:
+            timestamp = datetime.datetime.now()
         self.probability_of_action = probability_of_action
         self.timestamp = timestamp
 
@@ -124,6 +141,37 @@ class ModelParameters(db.Model):
         Return a string representation of the ModelParameters object.
         """
         return f"<ModelParameters probability_of_action={self.probability_of_action}>"
+
+
+class ThompsonSamplingParams(db.Model):
+    """
+    Thompson Sampling parameters per (group_id, decision_type).
+    Each dyad and decision type has its own independent TS bandit.
+    """
+
+    __tablename__ = "thompson_sampling_params"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    group_id = db.Column(db.String(255), nullable=False)
+    decision_type = db.Column(db.String(255), nullable=False)
+    params = db.Column(db.JSON, nullable=False)  # {action_0: {...}, action_1: {...}}
+    updated_at = db.Column(db.DateTime, nullable=False)
+
+    __table_args__ = (db.UniqueConstraint("group_id", "decision_type", name="uq_group_decision"),)
+
+    def __init__(
+        self,
+        group_id: str,
+        decision_type: str,
+        params: dict,
+        updated_at: datetime.datetime = None,
+    ):
+        if updated_at is None:
+            updated_at = datetime.datetime.now()
+        self.group_id = group_id
+        self.decision_type = decision_type
+        self.params = params
+        self.updated_at = updated_at
 
 
 class ModelUpdateRequests(db.Model):
@@ -148,11 +196,13 @@ class ModelUpdateRequests(db.Model):
         callback_url: str,
         request_timestamp: datetime.datetime,
         status: str = "processing",
-        created_at: datetime.datetime = datetime.datetime.now().isoformat(),
+        created_at: datetime.datetime | None = None,
     ):
         """
         Initialize the ModelUpdateRequests object.
         """
+        if created_at is None:
+            created_at = datetime.datetime.now()
         self.update_id = update_id
         self.callback_url = callback_url
         self.request_timestamp = request_timestamp
@@ -176,9 +226,10 @@ class StudyData(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     group_id = db.Column(db.String(255), nullable=False)
     decision_idx = db.Column(db.Integer, nullable=False)
+    decision_type = db.Column(db.String(255), nullable=False)
     action = db.Column(db.Integer, nullable=False)
     action_prob = db.Column(db.Float, nullable=False)
-    state = db.Column(db.ARRAY(db.Float), nullable=False)
+    state = db.Column(db.JSON, nullable=False)
     raw_context = db.Column(db.JSON, nullable=False)
     outcome = db.Column(db.JSON, nullable=False)
     reward = db.Column(db.Float, nullable=True)
@@ -189,6 +240,7 @@ class StudyData(db.Model):
         self,
         group_id: str,
         decision_idx: int,
+        decision_type: str,
         action: int,
         action_prob: float,
         state: list,
@@ -196,13 +248,16 @@ class StudyData(db.Model):
         outcome: dict,
         reward: float,
         request_timestamp: datetime.datetime,
-        created_at: datetime.datetime = datetime.datetime.now().isoformat(),
+        created_at: datetime.datetime | None = None,
     ):
         """
         Initialize the StudyData object.
         """
+        if created_at is None:
+            created_at = datetime.datetime.now()
         self.group_id = group_id
         self.decision_idx = decision_idx
+        self.decision_type = decision_type
         self.action = action
         self.action_prob = action_prob
         self.state = state
@@ -217,3 +272,144 @@ class StudyData(db.Model):
         Return a string representation of the StudyData object.
         """
         return f"<StudyData group_id={self.group_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"
+
+
+class EmpiricalBayesSnapshot(db.Model):
+    """
+    Persist local fits, pooled EB hyperparameters, and posterior summaries.
+    """
+
+    __tablename__ = "empirical_bayes_snapshots"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    snapshot_type = db.Column(db.String(64), nullable=False)
+    group_id = db.Column(db.String(255), nullable=True)
+    decision_type = db.Column(db.String(255), nullable=False)
+    agent_decision_index = db.Column(db.Integer, nullable=False)
+    sample_size = db.Column(db.Integer, nullable=False, default=0)
+    feature_dim = db.Column(db.Integer, nullable=False)
+    theta = db.Column(db.JSON, nullable=False)
+    covariance = db.Column(db.JSON, nullable=False)
+    perturbation = db.Column(db.JSON, nullable=True)
+    metadata_json = db.Column(db.JSON, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+
+    def __init__(
+        self,
+        snapshot_type: str,
+        decision_type: str,
+        agent_decision_index: int,
+        feature_dim: int,
+        theta: list,
+        covariance: list,
+        group_id: str | None = None,
+        sample_size: int = 0,
+        perturbation: list | None = None,
+        metadata_json: dict | None = None,
+        created_at: datetime.datetime | None = None,
+    ):
+        if created_at is None:
+            created_at = datetime.datetime.now()
+        self.snapshot_type = snapshot_type
+        self.group_id = group_id
+        self.decision_type = decision_type
+        self.agent_decision_index = agent_decision_index
+        self.sample_size = sample_size
+        self.feature_dim = feature_dim
+        self.theta = theta
+        self.covariance = covariance
+        self.perturbation = perturbation
+        self.metadata_json = metadata_json or {}
+        self.created_at = created_at
+
+
+class StandardizationBaseline(db.Model):
+    """
+    Per-dyad week-1 baselines used to standardize continuous state variables
+    before they enter the learner (main.tex §3, "Variable Standardization").
+
+    One row per (group_id, decision_type, variable_name). Populated once per
+    dyad/agent at the first weekly /update after the dyad has accumulated
+    week-1 data, and never modified thereafter.
+    """
+
+    __tablename__ = "standardization_baselines"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    group_id = db.Column(db.String(255), nullable=False)
+    decision_type = db.Column(db.String(255), nullable=False)
+    variable_name = db.Column(db.String(255), nullable=False)
+    mu = db.Column(db.Float, nullable=False)
+    sigma = db.Column(db.Float, nullable=False)
+    sample_size = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "group_id",
+            "decision_type",
+            "variable_name",
+            name="uq_baseline_group_dt_var",
+        ),
+    )
+
+    def __init__(
+        self,
+        group_id: str,
+        decision_type: str,
+        variable_name: str,
+        mu: float,
+        sigma: float,
+        sample_size: int = 0,
+        created_at: datetime.datetime | None = None,
+    ):
+        if created_at is None:
+            created_at = datetime.datetime.now()
+        self.group_id = group_id
+        self.decision_type = decision_type
+        self.variable_name = variable_name
+        self.mu = float(mu)
+        self.sigma = float(sigma)
+        self.sample_size = int(sample_size)
+        self.created_at = created_at
+
+
+class UpdateReproducibilitySnapshot(db.Model):
+    """
+    Points to an on-disk full copy of study_data, actions (decision states),
+    and groups taken immediately before a model update completes.
+    """
+
+    __tablename__ = "update_reproducibility_snapshots"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    update_id = db.Column(db.String(255), nullable=False)
+    model_parameters_id = db.Column(db.Integer, nullable=True)
+    snapshot_dir = db.Column(db.String(2048), nullable=False)
+    study_data_count = db.Column(db.Integer, nullable=False, default=0)
+    actions_count = db.Column(db.Integer, nullable=False, default=0)
+    groups_count = db.Column(db.Integer, nullable=False, default=0)
+    total_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, nullable=False)
+
+    def __init__(
+        self,
+        update_id: str,
+        snapshot_dir: str,
+        model_parameters_id: int | None = None,
+        study_data_count: int = 0,
+        actions_count: int = 0,
+        groups_count: int = 0,
+        total_bytes: int = 0,
+        created_at: datetime.datetime | None = None,
+    ):
+        if created_at is None:
+            created_at = datetime.datetime.now()
+        self.update_id = update_id
+        self.model_parameters_id = model_parameters_id
+        self.snapshot_dir = snapshot_dir
+        self.study_data_count = study_data_count
+        self.actions_count = actions_count
+        self.groups_count = groups_count
+        self.total_bytes = total_bytes
+        self.created_at = created_at

@@ -1,12 +1,9 @@
 import datetime
 import logging
-import uuid
-import requests
-from threading import Thread
 from flask import Blueprint, current_app, request, jsonify
-from app.models import Group, ModelParameters, StudyData, ModelUpdateRequests
-from app.algorithms.base import RLAlgorithm
+from app.models import Group, Action, StudyData
 from app.extensions import db
+from app.protocol import validate_context, validate_decision_type, validate_outcome
 
 data_blueprint = Blueprint("data", __name__)
 
@@ -18,12 +15,26 @@ example_study_data = {
     "timestamp": "2024-01-01T12:00:00Z",
     "data": {
         "context": {
-            "cur_var": 25,
-            "past3_vars": [24.5, 23.0, 22.5]
+            "slot": "am",
+            "agent_decision_index": 1,
+            "day_in_study": 1,
+            "week_in_study": 1,
+            "prior_med_adherence": "miss",
+            "aya_diary": {"mood": "miss", "physical": "miss"},
+            "relationship_quality_cp": "miss",
+            "relationship_quality_aya": "miss",
+            "aya_app_engagement": 1,
+            "aya_app_burden": 0.0,
+            "aya_missing_rate_7d": 1.0,
+            "current_game_on": 0,
         },
         "action": 1,
         "action_prob": 0.65,
-        "state": [25, 24.5, 23.0, 22.5],
+        "state": [1.0],
+        "outcome": {
+            "med_adherence": 1,
+            "prompted_by_message": True,
+        },
     }
 }
 
@@ -43,10 +54,10 @@ def check_fields(data: dict) -> tuple[bool, str]:
     
     if not isinstance(data["decision_type"], str):
         return False, "decision_type must be a string."
-    
-    if data["decision_type"] not in ["aya_message", "cp_message", "dyad_game"]:
-        return False, "Invalid decision_type. Must be 'aya_message', 'cp_message', or 'dyad_game'."
-    
+
+    valid_type, error_message = validate_decision_type(data["decision_type"])
+    if not valid_type:
+        return False, error_message
 
     if "timestamp" not in data:
         return False, "timestamp is required."
@@ -60,11 +71,9 @@ def check_fields(data: dict) -> tuple[bool, str]:
         return False, "context is required."
 
 
-    if "cur_var" not in group_data["context"]:
-        return False, "Invalid context. cur_var is required."
-
-    if "past3_vars" not in group_data["context"]:
-        return False, "Invalid context. past3_vars is required."
+    valid_context, error_message = validate_context(data["decision_type"], group_data["context"])
+    if not valid_context:
+        return False, error_message
 
     if "action" not in group_data:
         return False, "action is required."
@@ -74,17 +83,26 @@ def check_fields(data: dict) -> tuple[bool, str]:
     
     if "state" not in group_data:
         return False, "state is required."
+
+    if "outcome" not in group_data:
+        return False, "outcome is required."
+
+    valid_outcome, error_message = validate_outcome(data["decision_type"], group_data["outcome"])
+    if not valid_outcome:
+        return False, error_message
+
     return True, ""
 
 
-# @data_blueprint.route("/upload_data", methods=["POST"])
-def upload_data(data: dict):
+@data_blueprint.route("/upload_data", methods=["POST"])
+def upload_data(data: dict | None = None):
     """
     Uploads interaction data for a specific group, along with
     the action sent and the timestamp (and associated metadata).
     """
     try:
-        # data = request.get_json()
+        if data is None:
+            data = request.get_json()
 
         # Check if the required fields are present
         fields_present, error_message = check_fields(data)
@@ -102,27 +120,26 @@ def upload_data(data: dict):
         # Extract the decision index
         decision_idx = data["decision_idx"]
 
-        # Check if the decision index already exists
-        study_data = StudyData.query.filter_by(
-            group_id=group_id, decision_idx=decision_idx
-        ).first()
-        if study_data:
+        action_row = Action.query.filter_by(group_id=group_id, decision_idx=decision_idx).first()
+        if not action_row:
             return (
                 jsonify(
-                    {"status": "failed", "message": "Decision index already exists."}
+                    {"status": "failed", "message": "Associated action not found for this decision index."}
                 ),
-                400,
+                404,
             )
 
         # Extract the rest of the data
         request_timestamp = data["timestamp"]
+        if isinstance(request_timestamp, str):
+            request_timestamp = datetime.datetime.fromisoformat(request_timestamp)
         group_data = data["data"]
-        context = group_data["context"]
+        decision_type = data["decision_type"]
+        context = {**group_data["context"], "decision_type": decision_type}
         action = group_data["action"]
         action_prob = group_data["action_prob"]
         state = group_data["state"]
-        outcome = group_data["outcome"]
-        decision_type = data["decision_type"]
+        outcome = {**group_data["outcome"], "decision_type": decision_type}
         # Get the RL algorithm
         rl_algorithm = current_app.rl_algorithm
 
@@ -132,19 +149,29 @@ def upload_data(data: dict):
         if not status:
             return jsonify({"status": "failed", "message": "Reward creation failed."}), 400
 
-        # Save the data to the database
-        study_data = StudyData(
-            group_id=group_id,
-            decision_idx=decision_idx,
-            action=action,
-            action_prob=action_prob,
-            state=state,
-            raw_context=context,
-            outcome=outcome,
-            reward=reward,
-            request_timestamp=request_timestamp,
-        )
-        db.session.add(study_data)
+        existing = StudyData.query.filter_by(group_id=group_id, decision_idx=decision_idx).first()
+        if existing is None:
+            study_data = StudyData(
+                group_id=group_id,
+                decision_idx=decision_idx,
+                decision_type=decision_type,
+                action=action,
+                action_prob=action_prob,
+                state=state,
+                raw_context=context,
+                outcome=outcome,
+                reward=reward,
+                request_timestamp=request_timestamp,
+            )
+            db.session.add(study_data)
+        else:
+            existing.action = action
+            existing.action_prob = action_prob
+            existing.state = state
+            existing.raw_context = context
+            existing.outcome = outcome
+            existing.reward = reward
+            existing.request_timestamp = request_timestamp
         db.session.commit()
 
         # Log the completion

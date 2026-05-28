@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 backups/
+exports/
+.DS_Store
+nohup.out
+buffers/
+repro_snapshots/
+*.pdf

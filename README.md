@@ -125,6 +125,22 @@ To reset the database tables, use ```flask reset-db```
 
 ---
 
+## **View and export the database**
+
+**Export all tables to CSV:**
+```sh
+flask export-csv
+```
+Creates an `exports/` directory with CSV files: `groups.csv`, `actions.csv`, `study_data.csv`, `model_update_requests.csv`, `model_parameters.csv`, `thompson_sampling_params.csv` (when using Thompson Sampling). Open them in Excel, Google Sheets, or any spreadsheet tool.
+
+**View the database directly:**
+- **PostgreSQL**: Use `psql` (CLI) or a GUI like [pgAdmin](https://www.pgadmin.org/), [DBeaver](https://dbeaver.io/), or [TablePlus](https://tableplus.com/). Connect with the URI from `config.py` (e.g. `postgresql://zipingxu@localhost:5432/justin_rl_db`).
+- **SQLite** (testing): Use `sqlite3` CLI or [DB Browser for SQLite](https://sqlitebrowser.org/).
+
+**Automatic backups**: When `BACKUP_DATABASE` is True, each model update creates a timestamped zip in `backups/` containing CSV snapshots of all tables.
+
+---
+
 ## **Configurable Parameters**
 
 The template provides several configurable parameters in the `config.py` file:
@@ -136,6 +152,63 @@ The template provides several configurable parameters in the `config.py` file:
 - **BACKUP_DATABASE**: Set to True to enable automatic database backups before model updates. The backups are
   stored in the `backups` directory.
 - **RL_ALGORITHM_SEED**: Seed for the random number generator used by the decision-making algorithm.
+- **RL_ALGORITHM**: `"flat_prob"` (fixed probability) or `"thompson_sampling"` (Thompson Sampling per dyad/decision-type).
+
+---
+
+## **Thompson Sampling Algorithm**
+
+When `RL_ALGORITHM = "thompson_sampling"`, each `(group_id, decision_type)` pair runs its own independent Thompson Sampling bandit:
+- **Reward**: First entry of context (`cur_var`) or from outcome
+- **State**: Other entries (`past3_vars`) as context for a linear model
+- Uses Bayesian linear regression: E[r|a,x] = x^T θ_a with Gaussian prior
+- Parameters are stored in the `thompson_sampling_params` table
+
+---
+
+## **Deterministic Sampling and Reproducibility**
+
+When `RL_ALGORITHM = "empirical_bayes"`, the algorithm is fully deterministic
+given (a) a pre-sampled buffer of random primitives and (b) the ordered
+sequence of API events. There is no runtime RNG — every Gaussian and
+Bernoulli draw is taken from the buffer sequentially.
+
+**One-time setup (before the study starts)**:
+
+```sh
+flask init-buffer
+```
+
+This writes an `.npz` file to `SAMPLE_BUFFER_PATH` containing a long sequence
+of standard normals (`SAMPLE_BUFFER_NORMALS`) and uniforms
+(`SAMPLE_BUFFER_UNIFORMS`) sampled from `SAMPLE_BUFFER_SEED`. Keep this file
+alongside your database backups — it is an input to reproducing the study.
+
+The app auto-generates the buffer on first boot if `SAMPLE_BUFFER_AUTO_INIT`
+is True and the file doesn't exist; use the CLI for finer control (explicit
+seed, explicit size). Cursor positions are restored on server restart from
+the most recent `Action.random_state`, so interrupted runs resume where
+they left off without re-consuming primitives.
+
+**Reproducing a run**:
+
+```sh
+# From a repro snapshot directory (written before every /update):
+python tools/reproduce_run.py \
+    --buffer buffers/study_buffer.npz \
+    --snapshot repro_snapshots/<update_id>
+
+# Or from a flask export-csv dump:
+flask export-csv
+python tools/reproduce_run.py \
+    --buffer buffers/study_buffer.npz \
+    --exports exports/
+```
+
+The tool boots a fresh in-memory app, loads the original buffer at cursor 0,
+replays every `add_group`/`action`/`upload`/`update` event in chronological
+order, and asserts that every replayed `(action, action_prob)` matches the
+logged value bit-for-bit. Exit code 0 means the run reproduced exactly.
 
 ---
 
@@ -284,6 +357,18 @@ To run a specific test file like `test_users.py`, use:
 
 ```sh
 pytest tests/test_users.py
+```
+
+### **ADAPTS-HCT Simulation**
+
+To test the RL API against a live server with simulated study traffic:
+
+```sh
+# Terminal 1: Start the server (use port 5001 on macOS - port 5000 is often used by AirPlay)
+flask run --port 5001
+
+# Terminal 2: Run the simulation
+python tests/run_simulation.py --base-url http://127.0.0.1:5001 --weeks 2 --dyads 3
 ```
 
 ---
