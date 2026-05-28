@@ -1,17 +1,22 @@
-# JustIn Decision Making Algorithm API for Digital Interventions
+# ADAPTS-HCT RL API
 
-This is the JustIn Template, designed for deploying decision-making algorithms,
-such as Reinforcement Learning (RL) algorithms, in digital interventions.
-The template includes a demonstration implementation using a flat fixed
-probability mock RL algorithm, showcasing its structure and functionality.
+Flask-based RESTful API that delivers the three-agent reinforcement learning
+algorithm for the ADAPTS-HCT digital intervention (AYA, care partner, and
+weekly dyad game). The codebase is a fork of the JustIn template: the request
+shape and lifecycle (`/add_group`, `/action`, `/upload_data`, `/update`) match
+the JustIn contract, while the algorithms, feature builder, reward functions,
+and simulator are ADAPTS-HCT–specific.
 
-The template provides a Flask-based RESTful API for seamless integration with decision-making workflows. It supports:
+Authoritative algorithm reference: `Study_Design/main.tex` (Algorithms 1–3,
+Table 2 features, reward functions). Prior-construction work and the
+`empirical_bayes` design choices live in `Prior_Construction/`.
 
-- Database Management with Flask-SQLAlchemy.
-- Schema Migrations with Alembic.
-- Endpoints for user management, action requests, data uploads, and model updates.
+The API provides:
 
-This template is flexible and can accommodate any decision-making algorithm by replacing the mock algorithm provided.
+- Database management with Flask-SQLAlchemy and Alembic migrations.
+- Endpoints for dyad registration, action requests, data uploads, and model updates.
+- Multiple swappable learners (empirical-Bayes / Inf-RLSVI pool, local Inf-RLSVI, Thompson sampling, fixed-probability and constant baselines).
+- Deterministic execution from a pre-sampled random buffer, so any run can be replayed bit-for-bit.
 
 ---
 
@@ -33,33 +38,72 @@ This template is flexible and can accommodate any decision-making algorithm by r
 ## **Project Structure**
 
 ```plaintext
-JustIn_RL_API/
+ADAPTS-HCT-RL-API/
 │
-├── app/                     # Core application logic and organization.
-│   ├── algorithms/          # Contains decision-making algorithm implementations, including the mock RL algorithm.
-│   │   ├── base.py          # Base class for algorithms providing a standard interface.
-│   │   └── flat_prob.py     # Demonstration implementation of a flat fixed probability algorithm.
-│   ├── routes/              # API endpoint definitions.
-│   │   ├── action.py        # Endpoints for action requests.
-│   │   ├── data.py          # Endpoints for uploading user interaction data. Automatically triggered by action endpoint
-│   │   ├── update.py        # Endpoints for model updates.
-│   │   └── group.py         # Endpoints for registering a group.
-│   ├── models.py            # Database models defining users, actions, model parameters, and study data.
-│   ├── logging_config.py    # Configures detailed logging for debugging and application monitoring.
-│   └── extensions.py        # Configures Flask extensions like SQLAlchemy and migrations.
-│ 
-├── migrations/              # Alembic migration files
+├── app/                          # Core application logic.
+│   ├── algorithms/               # Decision-making algorithms (selected via RL_ALGORITHM in config.py).
+│   │   ├── base.py               # Base class / standard interface.
+│   │   ├── empirical_bayes.py    # Production EB-HPS + Inf-RLSVI (Study_Design/main.tex Algs 1–3).
+│   │   ├── inf_lsvi_local.py     # Local (per-dyad) Inf-RLSVI, no cross-dyad pooling.
+│   │   ├── inf_lsvi_pool.py      # Pooled Inf-RLSVI variant.
+│   │   ├── eb_gradient.py        # Gradient-based EB variant (research).
+│   │   ├── hybrid_rel_pool.py    # REL (weekly) pooled hybrid.
+│   │   ├── thompson_sampling.py  # Per-(group_id, decision_type) Thompson sampling.
+│   │   ├── flat_prob.py          # Fixed-probability baseline.
+│   │   ├── random_baseline.py    # Uniform random actions.
+│   │   ├── always_send.py        # Constant a=1 baseline.
+│   │   └── always_none.py        # Constant a=0 baseline.
+│   ├── routes/                   # API endpoint definitions.
+│   │   ├── group.py              # POST /add_group — register a dyad.
+│   │   ├── action.py             # POST /action — request action (decision-time).
+│   │   ├── data.py               # POST /upload_data — outcome / interaction data.
+│   │   └── update.py             # POST /update — trigger learner update.
+│   ├── models.py                 # SQLAlchemy models: Group, Action, StudyData, ModelParameters, etc.
+│   ├── feature_builder.py        # Builds phi(s, a) per Table 2 of main.tex (two-block layout B_m, B_x).
+│   ├── protocol.py               # Context schemas, outcome schemas, reward functions for each agent.
+│   ├── standardization.py        # Per-dyad week-1 standardization baselines.
+│   ├── deterministic_sampler.py  # Buffer-backed RNG (no live randomness at decision time).
+│   ├── repro_snapshot.py         # Pre-update snapshots for bit-for-bit reproduction.
+│   ├── logging_config.py         # Logging configuration (app_logger, rl_logger).
+│   └── extensions.py             # Flask extensions (SQLAlchemy, Migrate).
 │
-├── tests/                   # Comprehensive test suite for ensuring application reliability.
-│   ├── conftest.py          # Shared fixtures and configurations for tests.
-│   ├── test_actions.py      # Tests for the action-related routes.
-│   ├── test_update.py       # Tests for model update endpoints.
-│   └── test_group.py        # Tests for group management endpoints.
+├── migrations/                   # Alembic migration files.
+├── buffers/                      # Pre-sampled random buffer (.npz) — gitignored, generated by `flask init-buffer`.
+├── repro_snapshots/              # Per-update snapshots for reproducibility — gitignored.
 │
-├── config.py                # Application configuration
-├── run.py                   # Application entry point
-├── README.md                # Documentation
-└── environment.yml          # Conda environment file
+├── tests/                        # Test suite.
+│   ├── conftest.py               # Shared fixtures.
+│   ├── test_actions.py           # /action endpoint tests.
+│   ├── test_update.py            # /update endpoint tests.
+│   ├── test_feature_builder.py   # phi(s, a) shape and block-index tests.
+│   ├── test_protocol.py          # Context/outcome schema and reward tests.
+│   ├── test_deterministic_sampler.py  # Buffer cursor / replay tests.
+│   ├── test_reproducibility.py   # End-to-end bit-for-bit replay.
+│   ├── test_warmup.py            # 5-dyad randomized warmup behavior.
+│   ├── test_simulation.py        # Smoke test against the simulator.
+│   ├── test_resource_estimate.py # Resource-estimate harness.
+│   ├── simulate_adapts_hct.py    # Protocol-driven trial simulator (drives the live API).
+│   ├── run_simulation.py         # Simulation driver CLI.
+│   └── resource_estimate.py      # Resource-estimate helper.
+│
+├── tools/                        # Diagnostic and reproduction scripts.
+│   ├── reproduce_run.py          # Replay a study from buffer + snapshot/exports, assert bit-for-bit match.
+│   ├── validate_prior_in_rl_api.py  # Sanity-check prior settings against Prior_Construction/.
+│   ├── stress_test_correlation.py   # Stress test under feature correlation rho.
+│   ├── compare_inflsvi_vs_eb.py     # Side-by-side learner comparison.
+│   ├── posterior_variance_comparison.py
+│   ├── per_dyad_pi_trajectory.py
+│   ├── within_dyad_trajectory.py
+│   ├── cohort_median_trial_time.py
+│   └── …                         # Other rerun / diagnostic helpers.
+│
+├── config.py                     # Application configuration.
+├── run.py                        # Application entry point.
+├── environment.yml               # Linux conda environment (creates `justin_rl_api`).
+├── environment_mac.yml           # macOS conda environment.
+├── ADAPTS-HCT-Interaction-Flow.md  # End-to-end interaction flow (caller ↔ API).
+├── Possible_System_Failure.md    # Known failure modes and mitigations.
+└── README.md                     # This file.
 ```
 
 ---
@@ -79,11 +123,11 @@ This template utilizes PostgreSQL as the database backend.
 1. **Clone the repository**:
 
     ```sh
-    git clone https://github.com/yourusername/JustIn_RL_API.git
-    cd JustIn_RL_API
+    git clone https://github.com/StatisticalReinforcementLearningLab/ADAPTS-HCT-RL-API.git
+    cd ADAPTS-HCT-RL-API
     ```
 
-2. **Create and activate the conda environment**:
+2. **Create and activate the conda environment** (use `environment_mac.yml` on macOS):
 
     ```sh
     conda env create -f environment.yml
@@ -91,31 +135,34 @@ This template utilizes PostgreSQL as the database backend.
     ```
 
 3. **Configure the database**:
-    Setup a PostgreSQL database and create a new database for the application.
-    Update the database connection string in ```config.py```. For PostgreSQL, the string looks like:
+    Set up a PostgreSQL database and update the connection string in `config.py`:
 
     ```sh
     SQLALCHEMY_DATABASE_URI = "postgresql://<username>:<password>@<host>:<port>/<database>"
     ```
 
-4. **Initialize the database**:
+4. **Apply migrations** (migrations are checked into `migrations/versions/`):
 
     ```sh
-    flask db init
-    flask db migrate -m "Initial migration"
     flask db upgrade
     ```
 
-5. **Run the application**:
+5. **Seed the deterministic sample buffer** (one-time, required for `empirical_bayes`):
 
     ```sh
-    flask run
+    flask init-buffer
     ```
 
-    Add ```--debug``` to launch the API in debug mode.
+6. **Run the application**:
 
-6. **Access the API**:
-    Use an API client like Postman or cURL to send requests to `http://127.0.0.1:5000/` to access the API.
+    ```sh
+    flask run --port 5001   # use 5001 on macOS — port 5000 conflicts with AirPlay
+    ```
+
+    Add `--debug` to launch in debug mode.
+
+7. **Access the API**:
+    Send requests to `http://127.0.0.1:5001/api/v1/...` from any HTTP client (Postman, cURL, or the simulator in `tests/run_simulation.py`).
 
 ---
 
@@ -143,16 +190,21 @@ Creates an `exports/` directory with CSV files: `groups.csv`, `actions.csv`, `st
 
 ## **Configurable Parameters**
 
-The template provides several configurable parameters in the `config.py` file:
+Set in `config.py` (some are overridable via environment variables — see the file for details):
 
 - **SQLALCHEMY_DATABASE_URI**: Database connection string.
 - **SQLALCHEMY_TRACK_MODIFICATIONS**: Set to False to disable tracking modifications.
-- **PRIORS_PICKLE_FILE**: Path to the file containing the priors for the decision-making algorithm. If set to
-  `None`, the algorithm will use the **MODEL_PRIORS** parameter.
-- **BACKUP_DATABASE**: Set to True to enable automatic database backups before model updates. The backups are
-  stored in the `backups` directory.
-- **RL_ALGORITHM_SEED**: Seed for the random number generator used by the decision-making algorithm.
-- **RL_ALGORITHM**: `"flat_prob"` (fixed probability) or `"thompson_sampling"` (Thompson Sampling per dyad/decision-type).
+- **PRIORS_PICKLE_FILE**: Path to a pickled priors file. If `None`, the algorithm uses the **MODEL_PRIORS** parameter.
+- **BACKUP_DATABASE**: When True, every `/update` produces a timestamped zip of CSV snapshots in `backups/`.
+- **RL_ALGORITHM_SEED**: Seed for the RL algorithm's random state (used where the algorithm is not buffer-backed).
+- **RL_ALGORITHM** (env-overridable, default `"empirical_bayes"`): one of
+  - `"empirical_bayes"` — production EB-HPS + Inf-RLSVI (deterministic given the sample buffer).
+  - `"inf_lsvi_local"`, `"inf_lsvi_pool"`, `"eb_gradient"`, `"hybrid_rel_pool"` — research variants.
+  - `"thompson_sampling"` — per-(group_id, decision_type) Bayesian linear bandit.
+  - `"flat_prob"`, `"random_baseline"`, `"always_send"`, `"always_none"` — baselines.
+- **SAMPLE_BUFFER_PATH**: Path to the pre-sampled `.npz` random buffer (required by `empirical_bayes`). See "Deterministic Sampling and Reproducibility".
+- **SAMPLE_BUFFER_AUTO_INIT**: If True, the app auto-generates the buffer on first boot when missing.
+- **SAMPLE_BUFFER_SEED**, **SAMPLE_BUFFER_NORMALS**, **SAMPLE_BUFFER_UNIFORMS**: Buffer generation parameters.
 
 ---
 
@@ -216,16 +268,20 @@ logged value bit-for-bit. Exit code 0 means the run reproduced exactly.
 
 ### **Mock requests and responses**
 
-#### **Add User**
+#### **Add Group (Dyad)**
 
-- **FILE** - `routes/user.py`
-- **DESCRIPTION** - Add a new user with a unique user ID.
-- **POST** `/api/v1/add_user`
+- **FILE** - `app/routes/group.py`
+- **DESCRIPTION** - Register a new dyad. Set `warmup: true` for the first 5 enrolled dyads (per `main.tex` §2): those dyads run on Bernoulli(0.5) randomized actions to seed the EB hyper-prior.
+- **POST** `/api/v1/add_group`
 - **Request**:
 
   ```json
   {
-    "user_id": "test_user_123"
+    "group_id": "dyad_001",
+    "member_list": ["aya_001", "cp_001"],
+    "consent_start_date": "2026-01-01",
+    "consent_end_date": "2026-04-23",
+    "warmup": true
   }
   ```
 
@@ -233,9 +289,9 @@ logged value bit-for-bit. Exit code 0 means the run reproduced exactly.
 
   ```json
   {
-    "message": "User added successfully.",
+    "message": "Group added successfully.",
     "status": "success",
-    "user_id": "test_user_123"
+    "group_id": "dyad_001"
   }
   ```
 
