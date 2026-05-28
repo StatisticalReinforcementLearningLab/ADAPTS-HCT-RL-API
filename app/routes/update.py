@@ -14,7 +14,6 @@ from app.models import (
     Group,
     Action,
     ThompsonSamplingParams,
-    EmpiricalBayesSnapshot,
     UpdateReproducibilitySnapshot,
 )
 from app.algorithms.base import RLAlgorithm
@@ -42,7 +41,6 @@ def backup_tables(app):
             ModelUpdateRequests,
             ModelParameters,
             ThompsonSamplingParams,
-            EmpiricalBayesSnapshot,
             UpdateReproducibilitySnapshot,
         ]
 

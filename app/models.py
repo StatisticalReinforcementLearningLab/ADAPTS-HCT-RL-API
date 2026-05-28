@@ -70,6 +70,15 @@ class Action(db.Model):
     request_timestamp = db.Column(db.DateTime, nullable=False)
     timestamp = db.Column(db.DateTime, nullable=False)
 
+    __table_args__ = (
+        db.UniqueConstraint(
+            "group_id",
+            "decision_type",
+            "decision_idx",
+            name="uq_action_group_type_idx",
+        ),
+    )
+
     def __init__(
         self,
         group_id: str,
@@ -112,34 +121,77 @@ class Action(db.Model):
 
 class ModelParameters(db.Model):
     """
-    Database table to store parameters for the decision making algorithm.
-    This example assumes a fixed probability algorithm, so the parameters are
-    nothing but the probability of taking an action.
+    Unified table for all decision-making-algorithm parameters.
+
+    Holds either:
+      - A legacy / fixed-probability row (only ``probability_of_action`` set), or
+      - An Empirical-Bayes snapshot — local fit, pooled hyperparameters, or
+        posterior — one row per (``snapshot_type``, ``group_id`` (nullable for
+        pooled), ``decision_type``, ``agent_decision_index``).
+
+    Every column except ``id`` and ``timestamp`` is nullable so the same table
+    can house both shapes; the writing algorithm decides which fields to set.
     """
 
     __tablename__ = "model_parameters"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    probability_of_action = db.Column(db.Float, nullable=False)
+
+    # Legacy / fixed-probability field.
+    probability_of_action = db.Column(db.Float, nullable=True)
+
+    # Empirical-Bayes snapshot fields (absorbed from the former
+    # ``empirical_bayes_snapshots`` table).
+    snapshot_type = db.Column(db.String(64), nullable=True)
+    group_id = db.Column(db.String(255), nullable=True)
+    decision_type = db.Column(db.String(255), nullable=True)
+    agent_decision_index = db.Column(db.Integer, nullable=True)
+    sample_size = db.Column(db.Integer, nullable=True, default=0)
+    feature_dim = db.Column(db.Integer, nullable=True)
+    theta = db.Column(db.JSON, nullable=True)
+    covariance = db.Column(db.JSON, nullable=True)
+    perturbation = db.Column(db.JSON, nullable=True)
+    metadata_json = db.Column(db.JSON, nullable=True)
+
     timestamp = db.Column(db.DateTime, nullable=False)
 
     def __init__(
         self,
-        probability_of_action: float,
+        probability_of_action: float | None = None,
+        snapshot_type: str | None = None,
+        group_id: str | None = None,
+        decision_type: str | None = None,
+        agent_decision_index: int | None = None,
+        sample_size: int = 0,
+        feature_dim: int | None = None,
+        theta: list | None = None,
+        covariance: list | None = None,
+        perturbation: list | None = None,
+        metadata_json: dict | None = None,
         timestamp: datetime.datetime | None = None,
     ):
-        """
-        Initialize the ModelParameters object.
-        """
         if timestamp is None:
             timestamp = datetime.datetime.now()
         self.probability_of_action = probability_of_action
+        self.snapshot_type = snapshot_type
+        self.group_id = group_id
+        self.decision_type = decision_type
+        self.agent_decision_index = agent_decision_index
+        self.sample_size = sample_size
+        self.feature_dim = feature_dim
+        self.theta = theta
+        self.covariance = covariance
+        self.perturbation = perturbation
+        self.metadata_json = metadata_json if metadata_json is not None else {}
         self.timestamp = timestamp
 
     def __repr__(self):
-        """
-        Return a string representation of the ModelParameters object.
-        """
+        if self.snapshot_type is not None:
+            return (
+                f"<ModelParameters snapshot_type={self.snapshot_type} "
+                f"decision_type={self.decision_type} group_id={self.group_id} "
+                f"agent_decision_index={self.agent_decision_index}>"
+            )
         return f"<ModelParameters probability_of_action={self.probability_of_action}>"
 
 
@@ -236,6 +288,15 @@ class StudyData(db.Model):
     request_timestamp = db.Column(db.DateTime, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
+    __table_args__ = (
+        db.UniqueConstraint(
+            "group_id",
+            "decision_type",
+            "decision_idx",
+            name="uq_study_group_type_idx",
+        ),
+    )
+
     def __init__(
         self,
         group_id: str,
@@ -272,55 +333,6 @@ class StudyData(db.Model):
         Return a string representation of the StudyData object.
         """
         return f"<StudyData group_id={self.group_id}, raw_context={self.raw_context}, action={self.action}, reward={self.reward}>"
-
-
-class EmpiricalBayesSnapshot(db.Model):
-    """
-    Persist local fits, pooled EB hyperparameters, and posterior summaries.
-    """
-
-    __tablename__ = "empirical_bayes_snapshots"
-
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    snapshot_type = db.Column(db.String(64), nullable=False)
-    group_id = db.Column(db.String(255), nullable=True)
-    decision_type = db.Column(db.String(255), nullable=False)
-    agent_decision_index = db.Column(db.Integer, nullable=False)
-    sample_size = db.Column(db.Integer, nullable=False, default=0)
-    feature_dim = db.Column(db.Integer, nullable=False)
-    theta = db.Column(db.JSON, nullable=False)
-    covariance = db.Column(db.JSON, nullable=False)
-    perturbation = db.Column(db.JSON, nullable=True)
-    metadata_json = db.Column(db.JSON, nullable=True)
-    created_at = db.Column(db.DateTime, nullable=False)
-
-    def __init__(
-        self,
-        snapshot_type: str,
-        decision_type: str,
-        agent_decision_index: int,
-        feature_dim: int,
-        theta: list,
-        covariance: list,
-        group_id: str | None = None,
-        sample_size: int = 0,
-        perturbation: list | None = None,
-        metadata_json: dict | None = None,
-        created_at: datetime.datetime | None = None,
-    ):
-        if created_at is None:
-            created_at = datetime.datetime.now()
-        self.snapshot_type = snapshot_type
-        self.group_id = group_id
-        self.decision_type = decision_type
-        self.agent_decision_index = agent_decision_index
-        self.sample_size = sample_size
-        self.feature_dim = feature_dim
-        self.theta = theta
-        self.covariance = covariance
-        self.perturbation = perturbation
-        self.metadata_json = metadata_json or {}
-        self.created_at = created_at
 
 
 class StandardizationBaseline(db.Model):

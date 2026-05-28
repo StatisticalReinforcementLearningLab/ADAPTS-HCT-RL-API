@@ -12,7 +12,7 @@ def test_estimate_trial_resources_returns_positive_counts():
     )
     assert summary["event_counts"]["action"] > 0
     assert summary["event_counts"]["upload_data"] > 0
-    assert summary["row_counts"]["empirical_bayes_snapshots"] > 0
+    assert summary["row_counts"]["model_parameters"] > 0
     assert summary["estimated_storage_bytes"] > 0
     assert summary["traffic_profile"]["peak_weekly_actions"] > 0
     assert "logging_budget" in summary

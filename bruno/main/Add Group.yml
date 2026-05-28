@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/
+  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/add_group
   body:
     type: json
     data: |-

@@ -4,7 +4,7 @@ Prior_Construction/code/ implementation).
 
 Boots the Flask app with RL_ALGORITHM=eb_gradient, runs the protocol-
 faithful 25-dyad × 35-week simulator, then queries the persisted
-EmpiricalBayesSnapshot + Action rows to plot, per agent:
+ModelParameters + Action rows to plot, per agent:
 
   (1) Trace of the EB hyper-covariance  $\\hat\\Sigma_0$  over time
       (the per-coefficient variance pool).
@@ -64,7 +64,7 @@ AGENT_LABELS = {
 def run_simulation_and_collect(num_dyads: int = 25, num_weeks: int = 35) -> dict:
     """Boot the app, run the simulator, return raw snapshot + action rows."""
     from app import create_app, db
-    from app.models import EmpiricalBayesSnapshot, Action
+    from app.models import ModelParameters, Action
     from tests.simulate_adapts_hct import run_simulation
 
     app = create_app("config.TestingConfig")
@@ -87,9 +87,9 @@ def run_simulation_and_collect(num_dyads: int = 25, num_weeks: int = 35) -> dict
         # Hyper snapshots: one per (agent, refresh).
         for agent in AGENT_ORDER:
             rows = (
-                EmpiricalBayesSnapshot.query
+                ModelParameters.query
                 .filter_by(snapshot_type="hyper", decision_type=agent)
-                .order_by(EmpiricalBayesSnapshot.agent_decision_index.asc())
+                .order_by(ModelParameters.agent_decision_index.asc())
                 .all()
             )
             out["hyper"][agent] = [
@@ -109,9 +109,9 @@ def run_simulation_and_collect(num_dyads: int = 25, num_weeks: int = 35) -> dict
         # that single trajectory as a degenerate "all dyads share this trace".
         for agent in AGENT_ORDER:
             rows = (
-                EmpiricalBayesSnapshot.query
+                ModelParameters.query
                 .filter_by(snapshot_type="posterior", decision_type=agent)
-                .order_by(EmpiricalBayesSnapshot.agent_decision_index.asc())
+                .order_by(ModelParameters.agent_decision_index.asc())
                 .all()
             )
             if rows:
@@ -122,9 +122,9 @@ def run_simulation_and_collect(num_dyads: int = 25, num_weeks: int = 35) -> dict
                 out["posterior"][agent] = sorted(by_idx.items())
             else:
                 pooled = (
-                    EmpiricalBayesSnapshot.query
+                    ModelParameters.query
                     .filter_by(snapshot_type="local_fit", decision_type=agent, group_id=None)
-                    .order_by(EmpiricalBayesSnapshot.agent_decision_index.asc())
+                    .order_by(ModelParameters.agent_decision_index.asc())
                     .all()
                 )
                 out["posterior"][agent] = [

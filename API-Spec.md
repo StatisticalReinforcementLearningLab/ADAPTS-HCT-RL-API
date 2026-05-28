@@ -143,9 +143,13 @@ Response `201`:
   not need it.]** The earlier draft's `seed` field is **not** returned (the RNG state is
   internal). **[changed]**
 
+**Idempotency key:** `(group_id, decision_type, decision_idx)`. Each of the three agents
+(`aya_message`, `cp_message`, `dyad_game`) has its own per-dyad counter, so the same
+`decision_idx` value can legitimately appear once per `decision_type` for the same dyad.
+
 Error responses: `404` group not found / no model parameters; `400` `decision_idx` already
-exists for this dyad (idempotent — a repeated `(group_id, decision_idx)` is rejected, so the
-host can safely retry); `409` no prior `/upload_data` for this `(group_id, decision_type)`
+exists for this `(group_id, decision_type)` (idempotent — a repeated triple is rejected, so
+the host can safely retry); `409` no prior `/upload_data` for this `(group_id, decision_type)`
 (the host violated the "upload before action" contract); `500` internal error.
 
 ### 3.3 `POST /api/v1/upload_data` — provide current context + (optionally) log a prior outcome
@@ -445,7 +449,7 @@ so the action can be replayed deterministically.
 |---|---|---|
 | `rid` | string (unique) | unique action id returned in the response |
 | `group_id` | string | FK-by-value to `groups.group_id` |
-| `decision_idx` | int | host's per-dyad decision index (idempotency key with `group_id`) |
+| `decision_idx` | int | per-`(dyad, decision_type)` decision counter; component of the idempotency key |
 | `decision_type` | string | `aya_message` / `cp_message` / `dyad_game` |
 | `raw_context` | JSON | the per-agent context used at decision time (post-refactor: copied from the most-recent `/upload_data`) |
 | `state` | JSON | the feature vector `phi(s, a)` fed to the learner |
@@ -456,11 +460,13 @@ so the action can be replayed deterministically.
 | `request_timestamp` | datetime | timestamp the host stamped on the `/action` request |
 | `timestamp` | datetime | server-side row timestamp |
 
+Unique constraint: `(group_id, decision_type, decision_idx)`.
+
 ### 6.3 `study_data`
 
 One row per `/upload_data` that carries an `outcome`. The matching `actions` row is
-located by `(group_id, decision_idx)` and the scalar reward is computed server-side
-per §4.3. Context-only `/upload_data` calls (cold-start) do **not** write here.
+located by `(group_id, decision_type, decision_idx)` and the scalar reward is computed
+server-side per §4.3. Context-only `/upload_data` calls (cold-start) do **not** write here.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -476,15 +482,38 @@ per §4.3. Context-only `/upload_data` calls (cold-start) do **not** write here.
 | `request_timestamp` | datetime | timestamp on the `/upload_data` request |
 | `created_at` | datetime | row creation timestamp |
 
+Unique constraint: `(group_id, decision_type, decision_idx)`.
+
 ### 6.4 `model_parameters`
 
-Versioned policy parameters. The latest row is used at action time (via the FK from
-`actions.model_parameters_id`). `/update` inserts a new row.
+Unified store for all algorithm parameters — both the legacy fixed-probability
+config row and the Empirical-Bayes snapshots that previously lived in a
+separate `empirical_bayes_snapshots` table. **[changed: EB snapshots are now
+rows in this table; the EB table has been dropped.]**
+
+Each row is either:
+- a **policy** row (`snapshot_type IS NULL`) — set at app init and after each
+  `/update`. Holds only `probability_of_action`. `actions.model_parameters_id`
+  FKs to the latest such row (the one in effect at action time).
+- an **EB snapshot** row (`snapshot_type IN {"local_fit", "hyper", "posterior"}`).
+  Holds the EB fields. Written by `/update` for each (snapshot_type, group_id,
+  decision_type, agent_decision_index). Read by the learner at action time and
+  by analysis tooling.
 
 | Column | Type | Notes |
 |---|---|---|
-| `probability_of_action` | float | currently the only learner-agnostic field stored here; richer per-learner state lives in `empirical_bayes_snapshots` / `thompson_sampling_params`. **[planned: generalize this table to a polymorphic `params` JSON.]** |
-| `timestamp` | datetime | when this row was inserted (i.e. when the corresponding `/update` finished) |
+| `probability_of_action` | float (nullable) | set on legacy/policy rows; NULL on EB snapshot rows |
+| `snapshot_type` | string (nullable) | `local_fit` / `hyper` / `posterior` for EB rows; NULL on policy rows |
+| `group_id` | string (nullable) | dyad id for per-dyad EB rows; NULL for pooled `hyper` rows and for policy rows |
+| `decision_type` | string (nullable) | which agent's learner the EB row belongs to |
+| `agent_decision_index` | int (nullable) | bookkeeping — how many decisions had been observed when this snapshot was written |
+| `sample_size` | int (nullable) | n of decisions in the EB fit |
+| `feature_dim` | int (nullable) | dimensionality of `phi(s, a)` |
+| `theta` | JSON (nullable) | posterior mean / point estimate (length = `feature_dim`) |
+| `covariance` | JSON (nullable) | posterior covariance (`feature_dim` × `feature_dim`) |
+| `perturbation` | JSON (nullable) | RLSVI perturbation draw, if applicable |
+| `metadata_json` | JSON (nullable) | free-form (algorithm version, hyperparam values, sampler cursor positions) |
+| `timestamp` | datetime | when this row was inserted |
 
 ### 6.5 `model_update_requests`
 
@@ -514,26 +543,7 @@ Each row holds the bandit posterior for one independent Thompson Sampling bandit
 
 Unique constraint: `(group_id, decision_type)`.
 
-### 6.7 `empirical_bayes_snapshots`
-
-Persisted local fits, pooled hyperparameters, and posterior summaries for the EB
-learner. Written by `/update`. Read by analysis tooling and `tools/reproduce_run.py`.
-
-| Column | Type | Notes |
-|---|---|---|
-| `snapshot_type` | string | e.g. `local_fit`, `pooled_hyperparams`, `posterior` |
-| `group_id` | string (nullable) | NULL for cohort-level (pooled) snapshots |
-| `decision_type` | string | which agent's learner |
-| `agent_decision_index` | int | bookkeeping — how many decisions had been observed |
-| `sample_size` | int | n of decisions in the fit |
-| `feature_dim` | int | dimensionality of `phi(s, a)` |
-| `theta` | JSON | posterior mean / point estimate (length = feature_dim) |
-| `covariance` | JSON | posterior covariance (feature_dim × feature_dim) |
-| `perturbation` | JSON (nullable) | RLSVI perturbation draw, if applicable |
-| `metadata_json` | JSON (nullable) | free-form (algorithm version, hyperparam values) |
-| `created_at` | datetime |  |
-
-### 6.8 `standardization_baselines`
+### 6.7 `standardization_baselines`
 
 Per-dyad week-1 means and stds used to standardize continuous state variables before
 they enter the learner (`main.tex` §3 "Variable Standardization"). Written once per
@@ -552,7 +562,7 @@ never modified thereafter.
 
 Unique constraint: `(group_id, decision_type, variable_name)`.
 
-### 6.9 `update_reproducibility_snapshots`
+### 6.8 `update_reproducibility_snapshots`
 
 Pointers to on-disk full copies of `study_data`, `actions`, and `groups` taken
 immediately before each `/update` completes. The actual data lives on disk under

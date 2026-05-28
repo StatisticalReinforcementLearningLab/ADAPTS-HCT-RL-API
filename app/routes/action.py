@@ -77,14 +77,19 @@ def request_action():
         if not group:
             return jsonify({"status": "failed", "message": "Group not found."}), 404
 
-        # Check if decision_idx does not already have an action for the group
+        # Check that (group_id, decision_type, decision_idx) is not already used.
+        # Idempotency key is per-(dyad, decision_type): the three agents have
+        # independent decision counters.
         action_row = Action.query.filter_by(
-            group_id=group_id, decision_idx=decision_idx
+            group_id=group_id, decision_type=decision_type, decision_idx=decision_idx
         ).first()
         if action_row:
             return (
                 jsonify(
-                    {"status": "failed", "message": "Decision index already exists for this group."}
+                    {
+                        "status": "failed",
+                        "message": "Decision index already exists for this (group, decision_type).",
+                    }
                 ),
                 400,
             )
@@ -104,10 +109,14 @@ def request_action():
         if not status:
             return jsonify({"status": "failed", "message": state}), 400
 
-        # Get the latest model parameters from the database
-        model_parameters = ModelParameters.query.order_by(
-            ModelParameters.timestamp.desc()
-        ).first()
+        # Get the latest "policy" row (the bootstrap / non-snapshot row).
+        # Empirical-Bayes snapshot rows live in the same table; filter them
+        # out so the action FK keeps pointing at the policy config row.
+        model_parameters = (
+            ModelParameters.query.filter(ModelParameters.snapshot_type.is_(None))
+            .order_by(ModelParameters.timestamp.desc())
+            .first()
+        )
 
         # Check if the model parameters exist
         if not model_parameters:

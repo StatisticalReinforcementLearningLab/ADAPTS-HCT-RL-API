@@ -74,7 +74,7 @@ def run_one(algo_name: str, num_dyads: int, num_weeks: int) -> dict:
     snapshot rows for the three snapshot_types we care about."""
     TestingConfig.RL_ALGORITHM = algo_name
     from app import create_app, db
-    from app.models import EmpiricalBayesSnapshot
+    from app.models import ModelParameters
     from tests.simulate_adapts_hct import run_simulation
 
     out: dict = {a: {"local_fit": [], "posterior": [], "pooled": []} for a in AGENT_ORDER}
@@ -96,9 +96,9 @@ def run_one(algo_name: str, num_dyads: int, num_weeks: int) -> dict:
         for agent in AGENT_ORDER:
             # Per-dyad local fit (group_id != None) and EB posterior (same).
             rows = (
-                EmpiricalBayesSnapshot.query
-                .filter(EmpiricalBayesSnapshot.decision_type == agent)
-                .filter(EmpiricalBayesSnapshot.group_id.isnot(None))
+                ModelParameters.query
+                .filter(ModelParameters.decision_type == agent)
+                .filter(ModelParameters.group_id.isnot(None))
                 .all()
             )
             for r in rows:
@@ -112,11 +112,11 @@ def run_one(algo_name: str, num_dyads: int, num_weeks: int) -> dict:
                     )
             # Pooled local fit (group_id is None) — only present for inf_lsvi_pool.
             rows = (
-                EmpiricalBayesSnapshot.query
-                .filter(EmpiricalBayesSnapshot.decision_type == agent)
-                .filter(EmpiricalBayesSnapshot.group_id.is_(None))
-                .filter(EmpiricalBayesSnapshot.snapshot_type == "local_fit")
-                .order_by(EmpiricalBayesSnapshot.agent_decision_index.asc())
+                ModelParameters.query
+                .filter(ModelParameters.decision_type == agent)
+                .filter(ModelParameters.group_id.is_(None))
+                .filter(ModelParameters.snapshot_type == "local_fit")
+                .order_by(ModelParameters.agent_decision_index.asc())
                 .all()
             )
             for r in rows:

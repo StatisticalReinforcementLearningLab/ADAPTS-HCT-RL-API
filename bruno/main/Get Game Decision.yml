@@ -12,7 +12,7 @@ http:
       {
           "decision_type": "dyad_game",
           "group_id": "dyad_001",
-          "decision_idx": 2,
+          "decision_idx": 1,
           "context": {
               "agent_decision_index": 1,
               "week_in_study": 1,

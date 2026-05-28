@@ -305,7 +305,6 @@ def register_cli_commands(app):
             ModelUpdateRequests,
             ModelParameters,
             ThompsonSamplingParams,
-            EmpiricalBayesSnapshot,
             UpdateReproducibilitySnapshot,
         )
 
@@ -318,7 +317,6 @@ def register_cli_commands(app):
             ModelUpdateRequests,
             ModelParameters,
             ThompsonSamplingParams,
-            EmpiricalBayesSnapshot,
             UpdateReproducibilitySnapshot,
         ]
 

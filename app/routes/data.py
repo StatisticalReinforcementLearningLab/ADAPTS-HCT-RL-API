@@ -117,14 +117,17 @@ def upload_data(data: dict | None = None):
         if not group:
             return jsonify({"status": "failed", "message": "Group not found."}), 404
 
-        # Extract the decision index
+        # Extract the decision index and type (used as the composite lookup key).
         decision_idx = data["decision_idx"]
+        decision_type = data["decision_type"]
 
-        action_row = Action.query.filter_by(group_id=group_id, decision_idx=decision_idx).first()
+        action_row = Action.query.filter_by(
+            group_id=group_id, decision_type=decision_type, decision_idx=decision_idx
+        ).first()
         if not action_row:
             return (
                 jsonify(
-                    {"status": "failed", "message": "Associated action not found for this decision index."}
+                    {"status": "failed", "message": "Associated action not found for this (group, decision_type, decision_idx)."}
                 ),
                 404,
             )
@@ -134,7 +137,6 @@ def upload_data(data: dict | None = None):
         if isinstance(request_timestamp, str):
             request_timestamp = datetime.datetime.fromisoformat(request_timestamp)
         group_data = data["data"]
-        decision_type = data["decision_type"]
         context = {**group_data["context"], "decision_type": decision_type}
         action = group_data["action"]
         action_prob = group_data["action_prob"]
@@ -149,7 +151,9 @@ def upload_data(data: dict | None = None):
         if not status:
             return jsonify({"status": "failed", "message": "Reward creation failed."}), 400
 
-        existing = StudyData.query.filter_by(group_id=group_id, decision_idx=decision_idx).first()
+        existing = StudyData.query.filter_by(
+            group_id=group_id, decision_type=decision_type, decision_idx=decision_idx
+        ).first()
         if existing is None:
             study_data = StudyData(
                 group_id=group_id,

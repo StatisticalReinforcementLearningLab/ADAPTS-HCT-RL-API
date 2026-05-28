@@ -10,21 +10,22 @@ http:
     type: json
     data: |-
       {
-          "decision_type": "dyad_game",
+          "decision_type": "aya_message",
           "group_id": "dyad_001",
           "decision_idx": 1,
           "context": {
+              "slot": "am",
               "agent_decision_index": 1,
+              "day_in_study": 1,
               "week_in_study": 1,
-              "relationship_quality_aya": 0.5,
-              "relationship_quality_cp": 0.5,
+              "prior_med_adherence": "miss",
+              "aya_diary": { "mood": "miss", "physical": "miss" },
+              "relationship_quality_cp": "miss",
+              "relationship_quality_aya": "miss",
               "aya_app_engagement": 1,
-              "cp_app_engagement": 1,
-              "aya_app_burden": 0.5,
-              "cp_app_burden": 0.5,
-              "prior_game_action": 1,
-              "aya_diary_summary": 1,
-              "cp_diary_summary": 1
+              "aya_app_burden": 0.0,
+              "aya_missing_rate_7d": 0.0,
+              "current_game_on": 0
           },
           "timestamp": "2025-11-01T00:00:00.000Z"
       }

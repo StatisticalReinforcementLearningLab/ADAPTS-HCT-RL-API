@@ -99,13 +99,16 @@ def estimate_trial_resources(
 
     submit_uploads(simulator.flush_all_uploads())
 
+    # EB snapshot rows now live in the unified ``model_parameters`` table:
+    # one bootstrap row at app init, one "policy" row per /update, plus
+    # the local-fit / hyper / posterior snapshot rows that were formerly
+    # in the ``empirical_bayes_snapshots`` table.
     row_counts = {
         "groups": counts["add_group"],
         "actions": counts["action"],
         "study_data": counts["upload_data"],
         "model_update_requests": counts["update"],
-        "model_parameters": counts["update"] + 1,
-        "empirical_bayes_snapshots": eb_snapshot_rows + local_fit_rows,
+        "model_parameters": counts["update"] + 1 + eb_snapshot_rows + local_fit_rows,
     }
 
     average_payload_bytes = {
@@ -113,13 +116,17 @@ def estimate_trial_resources(
         for name in ("add_group", "action", "upload_data", "update")
     }
 
+    # EB snapshot rows are ~2048 bytes (theta + covariance JSON); the legacy
+    # policy rows are ~128 bytes. Estimate the mix using the snapshot-row count.
+    eb_snapshot_total = eb_snapshot_rows + local_fit_rows
+    legacy_policy_rows = row_counts["model_parameters"] - eb_snapshot_total
     estimated_storage_bytes = int(
         row_counts["groups"] * average_payload_bytes["add_group"]
         + row_counts["actions"] * average_payload_bytes["action"]
         + row_counts["study_data"] * average_payload_bytes["upload_data"]
         + row_counts["model_update_requests"] * average_payload_bytes["update"]
-        + row_counts["empirical_bayes_snapshots"] * 2048
-        + row_counts["model_parameters"] * 128
+        + eb_snapshot_total * 2048
+        + legacy_policy_rows * 128
     )
 
     logging_budget = _estimate_logging_bytes(dict(counts))

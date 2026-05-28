@@ -30,7 +30,7 @@ import requests as _r
 _r.post = lambda *a, **kw: type("R", (), {"status_code": 200, "text": ""})()
 
 from app import create_app, db
-from app.models import EmpiricalBayesSnapshot, Action
+from app.models import ModelParameters, Action
 from tests.simulate_adapts_hct import run_simulation
 import logging
 logging.disable(logging.CRITICAL)
@@ -50,9 +50,9 @@ def main():
 
         for agent in ("aya_message", "cp_message", "dyad_game"):
             hyper = (
-                EmpiricalBayesSnapshot.query
+                ModelParameters.query
                 .filter_by(snapshot_type="hyper", decision_type=agent)
-                .order_by(EmpiricalBayesSnapshot.agent_decision_index.desc())
+                .order_by(ModelParameters.agent_decision_index.desc())
                 .first()
             )
             if hyper is None:

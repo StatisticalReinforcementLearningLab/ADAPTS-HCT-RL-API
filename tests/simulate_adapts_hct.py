@@ -44,7 +44,6 @@ class DyadState:
     cp_latent: float
     relationship_latent: float
     warmup: bool = False
-    global_decision_index: int = 0
     aya_decision_index: int = 0
     cp_decision_index: int = 0
     game_decision_index: int = 0
@@ -181,17 +180,18 @@ class ProtocolTrialSimulator:
         self._ensure_histories(dyad, event_dt.date())
 
         decision_type = event["decision_type"]
-        dyad.global_decision_index += 1
-        decision_idx = dyad.global_decision_index
 
         if decision_type == "dyad_game":
             dyad.game_decision_index += 1
+            decision_idx = dyad.game_decision_index
             context = self._build_game_context(dyad, event_dt.date())
         elif decision_type == "cp_message":
             dyad.cp_decision_index += 1
+            decision_idx = dyad.cp_decision_index
             context = self._build_cp_context(dyad, event_dt.date())
         else:
             dyad.aya_decision_index += 1
+            decision_idx = dyad.aya_decision_index
             context = self._build_aya_context(dyad, event_dt.date(), event["slot"])
 
         return {

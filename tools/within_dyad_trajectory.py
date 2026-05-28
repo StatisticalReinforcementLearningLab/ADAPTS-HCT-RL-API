@@ -85,7 +85,7 @@ def main():
     args = ap.parse_args()
 
     from app import create_app, db
-    from app.models import EmpiricalBayesSnapshot, Action, Group
+    from app.models import ModelParameters, Action, Group
     from tests.simulate_adapts_hct import run_simulation
 
     focal_gid = f"dyad_{args.dyad_index:03d}"
@@ -122,9 +122,9 @@ def main():
         }
         pooled_posterior: dict[str, list[tuple[int, float]]] = {a: [] for a in AGENT_ORDER}
         per_dyad_rows = (
-            EmpiricalBayesSnapshot.query
+            ModelParameters.query
             .filter_by(snapshot_type="posterior")
-            .filter(EmpiricalBayesSnapshot.group_id.isnot(None))
+            .filter(ModelParameters.group_id.isnot(None))
             .all()
         )
         agents_with_per_dyad = set()
@@ -140,9 +140,9 @@ def main():
             if agent in agents_with_per_dyad:
                 continue
             pooled = (
-                EmpiricalBayesSnapshot.query
+                ModelParameters.query
                 .filter_by(snapshot_type="local_fit", decision_type=agent, group_id=None)
-                .order_by(EmpiricalBayesSnapshot.agent_decision_index.asc())
+                .order_by(ModelParameters.agent_decision_index.asc())
                 .all()
             )
             pooled_posterior[agent] = [

@@ -43,7 +43,7 @@ from app.deterministic_sampler import DeterministicSampleStream
 from app.extensions import db
 from app.feature_builder import ProtocolRLFeatureBuilder
 from app.logging_config import get_rl_logger
-from app.models import EmpiricalBayesSnapshot, StandardizationBaseline
+from app.models import ModelParameters, StandardizationBaseline
 from app.protocol import compute_reward, encode_state, validate_context, validate_outcome
 from app.standardization import (
     compute_week1_baselines_for_dyad,
@@ -334,7 +334,7 @@ class ThreeAgentInfLsviAlgorithm(RLAlgorithm):
         if self.app is None:
             return
         with self.app.app_context():
-            snap = EmpiricalBayesSnapshot(
+            snap = ModelParameters(
                 snapshot_type=snapshot_type,
                 group_id=group_id,
                 decision_type=decision_type,
@@ -353,11 +353,11 @@ class ThreeAgentInfLsviAlgorithm(RLAlgorithm):
         if self.app is None:
             return None
         with self.app.app_context():
-            q = EmpiricalBayesSnapshot.query.filter_by(
+            q = ModelParameters.query.filter_by(
                 snapshot_type=snapshot_type,
                 decision_type=decision_type,
                 group_id=group_id,
-            ).order_by(EmpiricalBayesSnapshot.agent_decision_index.desc())
+            ).order_by(ModelParameters.agent_decision_index.desc())
             return q.first()
 
     def _stabilize_covariance(self, cov: np.ndarray) -> np.ndarray:
