@@ -1,0 +1,37 @@
+info:
+  name: Get Game Decision
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: http://127.0.0.1:5001/api/v1/action
+  body:
+    type: json
+    data: |-
+      {
+          "decision_type": "dyad_game",
+          "group_id": "group_1",
+          "decision_idx": 1,
+          "context": {
+              "agent_decision_index": 1,
+              "week_in_study": 1,
+              "relationship_quality_aya": 0.5,
+              "relationship_quality_cp": 0.5,
+              "aya_app_engagement": 1,
+              "cp_app_engagement": 1,
+              "aya_app_burden": 0.5,
+              "cp_app_burden": 0.5,
+              "prior_game_action": 1,
+              "aya_diary_summary": 1,
+              "cp_diary_summary": 1
+          },
+          "timestamp": "2025-11-01T00:00:00.000Z"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
