@@ -418,19 +418,157 @@ per-window calls.)
 
 ## 6. Persisted data model (API-internal)
 
-For reference; the host does not write these directly.
+Authoritative source: `app/models.py`. The host does not write these directly; all
+mutations happen through the four endpoints in §3. `flask export-csv` dumps every
+table to `exports/` for post-study analysis.
 
-- `groups` — `group_id`, `group_info` (member_list, consent dates), `warmup`.
-- `actions` — one row per `/action`: `rid`, `group_id`, `decision_idx`, `decision_type`,
-  `raw_context`, `state`, `action`, `action_prob`, `random_state`, `model_parameters_id`,
-  timestamps.
-- `study_data` — one row per `/upload_data`: above plus `outcome` and computed `reward`.
-- `model_parameters` — versioned policy parameters (latest is used at action time).
-- `model_update_requests` — `update_id`, `status`, `callback_url`, timestamps, `error_message`.
-- `empirical_bayes_snapshots`, `standardization_baselines`, `update_reproducibility_snapshots`,
-  `thompson_sampling_params` — learner internals / per-dyad week-1 standardization / repro.
+Every table has a synthetic `id` integer primary key (autoincrement) which is omitted
+from the column listings below.
 
-`flask export-csv` dumps all tables for post-study analysis.
+### 6.1 `groups`
+
+One row per dyad. Written by `/add_group`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `group_id` | string (unique) | host-supplied dyad identifier |
+| `group_info` | JSON | `{member_list, consent_start_date, consent_end_date}` |
+| `warmup` | bool | if `true`, every `/action` for this dyad is `Bernoulli(0.5)` regardless of the learner |
+| `created_at` | datetime | row creation timestamp |
+
+### 6.2 `actions`
+
+One row per `/action`. Records the realized decision and the random-state cursor used,
+so the action can be replayed deterministically.
+
+| Column | Type | Notes |
+|---|---|---|
+| `rid` | string (unique) | unique action id returned in the response |
+| `group_id` | string | FK-by-value to `groups.group_id` |
+| `decision_idx` | int | host's per-dyad decision index (idempotency key with `group_id`) |
+| `decision_type` | string | `aya_message` / `cp_message` / `dyad_game` |
+| `raw_context` | JSON | the per-agent context used at decision time (post-refactor: copied from the most-recent `/upload_data`) |
+| `state` | JSON | the feature vector `phi(s, a)` fed to the learner |
+| `action` | int | chosen action ∈ {0, 1} |
+| `action_prob` | float | Pr(chosen action), not Pr(action = 1) |
+| `random_state` | JSON | sample-buffer cursor positions for this draw (for replay) |
+| `model_parameters_id` | int (FK) | which `model_parameters` row was used |
+| `request_timestamp` | datetime | timestamp the host stamped on the `/action` request |
+| `timestamp` | datetime | server-side row timestamp |
+
+### 6.3 `study_data`
+
+One row per `/upload_data` that carries an `outcome`. The matching `actions` row is
+located by `(group_id, decision_idx)` and the scalar reward is computed server-side
+per §4.3. Context-only `/upload_data` calls (cold-start) do **not** write here.
+
+| Column | Type | Notes |
+|---|---|---|
+| `group_id` | string |  |
+| `decision_idx` | int |  |
+| `decision_type` | string |  |
+| `action` | int | echoed from the matching `actions` row |
+| `action_prob` | float | echoed from the matching `actions` row |
+| `state` | JSON | feature vector at decision time |
+| `raw_context` | JSON | context at decision time (same value as `actions.raw_context`) |
+| `outcome` | JSON | realized outcome per `OUTCOME_SCHEMAS[decision_type]` (§4.2) |
+| `reward` | float | scalar reward computed from `outcome` per §4.3 |
+| `request_timestamp` | datetime | timestamp on the `/upload_data` request |
+| `created_at` | datetime | row creation timestamp |
+
+### 6.4 `model_parameters`
+
+Versioned policy parameters. The latest row is used at action time (via the FK from
+`actions.model_parameters_id`). `/update` inserts a new row.
+
+| Column | Type | Notes |
+|---|---|---|
+| `probability_of_action` | float | currently the only learner-agnostic field stored here; richer per-learner state lives in `empirical_bayes_snapshots` / `thompson_sampling_params`. **[planned: generalize this table to a polymorphic `params` JSON.]** |
+| `timestamp` | datetime | when this row was inserted (i.e. when the corresponding `/update` finished) |
+
+### 6.5 `model_update_requests`
+
+One row per `/update`. Tracks async fit progress.
+
+| Column | Type | Notes |
+|---|---|---|
+| `update_id` | string | UUID returned in the 202 response |
+| `status` | string | `processing` / `completed` / `failed` |
+| `callback_url` | string | URL the API POSTs to on completion |
+| `request_timestamp` | datetime | from the `/update` payload |
+| `created_at` | datetime | row creation timestamp |
+| `completed_at` | datetime (nullable) | set when fit terminates |
+| `error_message` | string (nullable) | set on failure |
+
+### 6.6 `thompson_sampling_params`
+
+One row per `(group_id, decision_type)` when `RL_ALGORITHM = "thompson_sampling"`.
+Each row holds the bandit posterior for one independent Thompson Sampling bandit.
+
+| Column | Type | Notes |
+|---|---|---|
+| `group_id` | string |  |
+| `decision_type` | string |  |
+| `params` | JSON | `{action_0: {...}, action_1: {...}}` posterior moments per action |
+| `updated_at` | datetime | last write |
+
+Unique constraint: `(group_id, decision_type)`.
+
+### 6.7 `empirical_bayes_snapshots`
+
+Persisted local fits, pooled hyperparameters, and posterior summaries for the EB
+learner. Written by `/update`. Read by analysis tooling and `tools/reproduce_run.py`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `snapshot_type` | string | e.g. `local_fit`, `pooled_hyperparams`, `posterior` |
+| `group_id` | string (nullable) | NULL for cohort-level (pooled) snapshots |
+| `decision_type` | string | which agent's learner |
+| `agent_decision_index` | int | bookkeeping — how many decisions had been observed |
+| `sample_size` | int | n of decisions in the fit |
+| `feature_dim` | int | dimensionality of `phi(s, a)` |
+| `theta` | JSON | posterior mean / point estimate (length = feature_dim) |
+| `covariance` | JSON | posterior covariance (feature_dim × feature_dim) |
+| `perturbation` | JSON (nullable) | RLSVI perturbation draw, if applicable |
+| `metadata_json` | JSON (nullable) | free-form (algorithm version, hyperparam values) |
+| `created_at` | datetime |  |
+
+### 6.8 `standardization_baselines`
+
+Per-dyad week-1 means and stds used to standardize continuous state variables before
+they enter the learner (`main.tex` §3 "Variable Standardization"). Written once per
+(dyad, decision_type, variable) at the first `/update` after enough week-1 data is in;
+never modified thereafter.
+
+| Column | Type | Notes |
+|---|---|---|
+| `group_id` | string |  |
+| `decision_type` | string |  |
+| `variable_name` | string | name of the standardized field (e.g. `aya_app_burden`) |
+| `mu` | float | week-1 mean |
+| `sigma` | float | week-1 standard deviation |
+| `sample_size` | int | number of week-1 observations the baseline was computed from |
+| `created_at` | datetime |  |
+
+Unique constraint: `(group_id, decision_type, variable_name)`.
+
+### 6.9 `update_reproducibility_snapshots`
+
+Pointers to on-disk full copies of `study_data`, `actions`, and `groups` taken
+immediately before each `/update` completes. The actual data lives on disk under
+`repro_snapshots/<update_id>/`; this table is the index. Consumed by
+`tools/reproduce_run.py` to replay a study.
+
+| Column | Type | Notes |
+|---|---|---|
+| `update_id` | string | matches `model_update_requests.update_id` |
+| `model_parameters_id` | int (nullable) | the `model_parameters` row produced by this update |
+| `snapshot_dir` | string | absolute or repo-relative path to the on-disk snapshot |
+| `study_data_count` | int | row count at snapshot time |
+| `actions_count` | int |  |
+| `groups_count` | int |  |
+| `total_bytes` | int | total snapshot size on disk |
+| `created_at` | datetime |  |
 
 ---
 
