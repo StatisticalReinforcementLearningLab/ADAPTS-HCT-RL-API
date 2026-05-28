@@ -5,13 +5,13 @@ info:
 
 http:
   method: POST
-  url: http://127.0.0.1:5001/api/v1/action
+  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/action
   body:
     type: json
     data: |-
       {
           "decision_type": "dyad_game",
-          "group_id": "group_1",
+          "group_id": "dyad_001",
           "decision_idx": 1,
           "context": {
               "agent_decision_index": 1,
