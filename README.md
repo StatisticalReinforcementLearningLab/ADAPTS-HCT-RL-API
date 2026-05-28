@@ -130,15 +130,30 @@ This template utilizes PostgreSQL as the database backend.
 2. **Create and activate the conda environment** (use `environment_mac.yml` on macOS):
 
     ```sh
+    # Windows
     conda env create -f environment.yml
+    # Mac
+    conda env create -f environment_mac.yml
     conda activate justin_rl_api
     ```
 
 3. **Configure the database**:
-    Set up a PostgreSQL database and update the connection string in `config.py`:
+    Setup a PostgreSQL database ([download](https://www.postgresql.org/download/ )) and create a new database for the application.
+
+    Create a database
+    ```sh
+    # in shell
+    psql -U postgres
+
+    # in psql
+    CREATE DATABASE your_db_name;
+
+    ```
+
+    Create a file ".env" at the root folder of your project and add the database connection string. For PostgreSQL, the string looks like:
 
     ```sh
-    SQLALCHEMY_DATABASE_URI = "postgresql://<username>:<password>@<host>:<port>/<database>"
+    SQLALCHEMY_DATABASE_URI="postgresql://<username>:<password>@<host>:<port>/<database>"
     ```
 
 4. **Apply migrations** (migrations are checked into `migrations/versions/`):

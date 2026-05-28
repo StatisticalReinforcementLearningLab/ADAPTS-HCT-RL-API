@@ -18,6 +18,7 @@ dependencies:
   - pip=24.2
   - psycopg2=2.9.9
   - python=3.11.11
+  - python-dotenv=1.1.0
   - setuptools=75.1.0
   - sqlalchemy=2.0.34
   - sqlite=3.45.3
