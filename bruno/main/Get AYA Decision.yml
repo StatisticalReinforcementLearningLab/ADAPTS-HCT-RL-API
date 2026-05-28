@@ -1,0 +1,37 @@
+info:
+  name: Get AYA Decision
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/action
+  body:
+    type: json
+    data: |-
+      {
+          "decision_type": "dyad_game",
+          "group_id": "dyad_001",
+          "decision_idx": 1,
+          "context": {
+              "agent_decision_index": 1,
+              "week_in_study": 1,
+              "relationship_quality_aya": 0.5,
+              "relationship_quality_cp": 0.5,
+              "aya_app_engagement": 1,
+              "cp_app_engagement": 1,
+              "aya_app_burden": 0.5,
+              "cp_app_burden": 0.5,
+              "prior_game_action": 1,
+              "aya_diary_summary": 1,
+              "cp_diary_summary": 1
+          },
+          "timestamp": "2025-11-01T00:00:00.000Z"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
