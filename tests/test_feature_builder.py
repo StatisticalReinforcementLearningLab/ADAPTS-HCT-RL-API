@@ -75,10 +75,11 @@ def test_standardization_applies_to_continuous_variables_only():
     u_std = fb.base_vector(ctx, baselines=baselines)
     # The intercept and ordinal value cells should be unchanged.
     assert np.isclose(u_std[0], u_raw[0])
-    # Find indices for the two standardized variables and check they moved.
+    # Single shared indicator layout: u = [1, I, v_1*I, ..., v_J*I], so
+    # variable k's value sits at position 2 + k.
     names = fb.variable_names
-    burden_pair = 1 + 2 * names.index("aya_app_burden") + 1
-    mr_pair = 1 + 2 * names.index("aya_missing_rate_7d") + 1
+    burden_pair = 2 + names.index("aya_app_burden")
+    mr_pair = 2 + names.index("aya_missing_rate_7d")
     assert not np.isclose(u_std[burden_pair], u_raw[burden_pair])
     assert not np.isclose(u_std[mr_pair], u_raw[mr_pair])
     # Expected: (0.2 - 0.2) / 0.1 = 0.0  and  (0.6 - 0.5) / 0.1 = 1.0
@@ -86,23 +87,27 @@ def test_standardization_applies_to_continuous_variables_only():
     assert np.isclose(u_std[mr_pair], 1.0)
 
 
-def test_dyad_game_schema_has_diary_summaries():
+def test_dyad_game_uses_five_tailoring_vars():
     fb = ProtocolRLFeatureBuilder("dyad_game")
     ctx = {
         "agent_decision_index": 1,
         "week_in_study": 1,
-        "relationship_quality_aya": 4,
-        "relationship_quality_cp": 3,
         "aya_app_engagement": 2,
         "cp_app_engagement": 3,
         "aya_app_burden": 0.5,
         "cp_app_burden": 0.2,
         "prior_game_action": "miss",
-        "aya_diary_summary": 0.6,
-        "cp_diary_summary": 0.7,
     }
     u = fb.base_vector(ctx)
     assert u.shape[0] == fb.base_dim
-    # Ensure the new variables are present in the builder spec.
-    assert "aya_diary_summary" in fb.variable_names
-    assert "cp_diary_summary" in fb.variable_names
+    # The pruned dyad_game state is the five tailoring variables only — no
+    # diary summaries, no relationship_quality (API-Spec §5.2).
+    assert fb.variable_names == [
+        "aya_app_engagement",
+        "cp_app_engagement",
+        "aya_app_burden",
+        "cp_app_burden",
+        "prior_game_action",
+    ]
+    assert "aya_diary_summary" not in fb.variable_names
+    assert "cp_diary_summary" not in fb.variable_names

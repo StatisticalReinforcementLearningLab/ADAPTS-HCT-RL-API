@@ -4,12 +4,11 @@ import datetime
 
 class Group(db.Model):
     """
-    Database table to store groups.
+    Database table to store groups (dyads).
 
-    `warmup`: when True, the algorithm bypasses the learner and returns a
-    purely-randomized action (Bernoulli(0.5)) for every decision for this
-    dyad. The first 5 dyads in the trial are flagged warmup so that the
-    EB prior can be estimated from their data (main.tex §2 Warming-up).
+    Warm-up is decided server-side at /action time from the cohort size and
+    the dyad's cp_message decision count (API-Spec §3.2); it is not a
+    per-dyad host flag and is not stored here.
     """
 
     __tablename__ = "groups"
@@ -17,14 +16,12 @@ class Group(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     group_id = db.Column(db.String(255), unique=True, nullable=False)
     group_info = db.Column(db.JSON, nullable=False)
-    warmup = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
     def __init__(
         self,
         group_id: str,
         group_info: dict,
-        warmup: bool = False,
         created_at: datetime.datetime | None = None,
     ):
         """
@@ -34,16 +31,52 @@ class Group(db.Model):
             created_at = datetime.datetime.now()
         self.group_id = group_id
         self.group_info = group_info
-        self.warmup = bool(warmup)
         self.created_at = created_at
 
     def __repr__(self):
         """
         Return a string representation of the Group object.
         """
+        return f"<Group group_id={self.group_id} created_at={self.created_at}>"
+
+
+class DataUpload(db.Model):
+    """
+    Append-only log of every /upload_data call (API-Spec §6.3).
+
+    Each row is a full flat snapshot of every variable in the field
+    dictionary (`data.X` always present, possibly the literal "miss").
+    The "current value of field X for dyad Y" is `data.X` from the most
+    recent row for Y. /action reads the latest row at decision time; /update
+    walks the timeline to derive outcomes and rewards.
+    """
+
+    __tablename__ = "data_uploads"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    group_id = db.Column(db.String(255), nullable=False)
+    data = db.Column(db.JSON, nullable=False)
+    request_timestamp = db.Column(db.DateTime, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False)
+
+    def __init__(
+        self,
+        group_id: str,
+        data: dict,
+        request_timestamp: datetime.datetime,
+        created_at: datetime.datetime | None = None,
+    ):
+        if created_at is None:
+            created_at = datetime.datetime.now()
+        self.group_id = group_id
+        self.data = data
+        self.request_timestamp = request_timestamp
+        self.created_at = created_at
+
+    def __repr__(self):
         return (
-            f"<Group group_id={self.group_id} warmup={self.warmup} "
-            f"created_at={self.created_at}>"
+            f"<DataUpload group_id={self.group_id} "
+            f"request_timestamp={self.request_timestamp}>"
         )
 
 
@@ -63,6 +96,8 @@ class Action(db.Model):
     raw_context = db.Column(db.JSON, nullable=False)
     action = db.Column(db.Integer, nullable=False)
     action_prob = db.Column(db.Float, nullable=False)
+    is_warmup = db.Column(db.Boolean, nullable=False, default=False)
+    warmup_reason = db.Column(db.String(32), nullable=True)
     random_state = db.Column(db.JSON, nullable=False)
     model_parameters_id = db.Column(
         db.Integer, db.ForeignKey("model_parameters.id"), nullable=False
@@ -92,6 +127,8 @@ class Action(db.Model):
         random_state: dict,
         model_parameters_id: int,
         request_timestamp: datetime.datetime,
+        is_warmup: bool = False,
+        warmup_reason: str | None = None,
         timestamp: datetime.datetime | None = None,
     ):
         """
@@ -107,6 +144,8 @@ class Action(db.Model):
         self.decision_type = decision_type
         self.raw_context = raw_context
         self.action_prob = action_prob
+        self.is_warmup = bool(is_warmup)
+        self.warmup_reason = warmup_reason
         self.random_state = random_state
         self.model_parameters_id = model_parameters_id
         self.request_timestamp = request_timestamp
@@ -236,7 +275,6 @@ class ModelUpdateRequests(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     update_id = db.Column(db.String(255), nullable=False)
     status = db.Column(db.String(50), nullable=False)
-    callback_url = db.Column(db.String(1024), nullable=False)
     request_timestamp = db.Column(db.DateTime, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
     completed_at = db.Column(db.DateTime, nullable=True)
@@ -245,18 +283,19 @@ class ModelUpdateRequests(db.Model):
     def __init__(
         self,
         update_id: str,
-        callback_url: str,
         request_timestamp: datetime.datetime,
         status: str = "processing",
         created_at: datetime.datetime | None = None,
     ):
         """
         Initialize the ModelUpdateRequests object.
+
+        The new design has no callback: completion is observed by reading
+        `status` / `completed_at` (API-Spec §3.4), not POSTed anywhere.
         """
         if created_at is None:
             created_at = datetime.datetime.now()
         self.update_id = update_id
-        self.callback_url = callback_url
         self.request_timestamp = request_timestamp
         self.status = status
         self.created_at = created_at
@@ -270,7 +309,13 @@ class ModelUpdateRequests(db.Model):
 
 class StudyData(db.Model):
     """
-    Database table to store study data.
+    Update-derived (action, outcome) pairs (API-Spec §6.4).
+
+    One row per (action, derived outcome), written during /update: the action
+    is located in `actions`, the outcome fields are read from later
+    `data_uploads` rows on the timeline (§5.3), and the scalar reward is
+    computed and stored. Idempotent across /update re-runs — an existing row
+    is updated in place if its outcome window has since filled in.
     """
 
     __tablename__ = "study_data"
@@ -286,6 +331,7 @@ class StudyData(db.Model):
     outcome = db.Column(db.JSON, nullable=False)
     reward = db.Column(db.Float, nullable=True)
     request_timestamp = db.Column(db.DateTime, nullable=False)
+    derived_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False)
 
     __table_args__ = (
@@ -309,6 +355,7 @@ class StudyData(db.Model):
         outcome: dict,
         reward: float,
         request_timestamp: datetime.datetime,
+        derived_at: datetime.datetime | None = None,
         created_at: datetime.datetime | None = None,
     ):
         """
@@ -326,6 +373,7 @@ class StudyData(db.Model):
         self.outcome = outcome
         self.reward = reward
         self.request_timestamp = request_timestamp
+        self.derived_at = derived_at
         self.created_at = created_at
 
     def __repr__(self):
@@ -388,8 +436,10 @@ class StandardizationBaseline(db.Model):
 
 class UpdateReproducibilitySnapshot(db.Model):
     """
-    Points to an on-disk full copy of study_data, actions (decision states),
-    and groups taken immediately before a model update completes.
+    Points to an on-disk full copy of data_uploads, actions (decision states),
+    and groups taken immediately before a model update completes. Under the
+    update-derived design study_data is itself produced during /update, so the
+    snapshot copies the upstream data_uploads instead (API-Spec §6.9).
     """
 
     __tablename__ = "update_reproducibility_snapshots"
@@ -398,7 +448,7 @@ class UpdateReproducibilitySnapshot(db.Model):
     update_id = db.Column(db.String(255), nullable=False)
     model_parameters_id = db.Column(db.Integer, nullable=True)
     snapshot_dir = db.Column(db.String(2048), nullable=False)
-    study_data_count = db.Column(db.Integer, nullable=False, default=0)
+    data_uploads_count = db.Column(db.Integer, nullable=False, default=0)
     actions_count = db.Column(db.Integer, nullable=False, default=0)
     groups_count = db.Column(db.Integer, nullable=False, default=0)
     total_bytes = db.Column(db.BigInteger, nullable=False, default=0)
@@ -409,7 +459,7 @@ class UpdateReproducibilitySnapshot(db.Model):
         update_id: str,
         snapshot_dir: str,
         model_parameters_id: int | None = None,
-        study_data_count: int = 0,
+        data_uploads_count: int = 0,
         actions_count: int = 0,
         groups_count: int = 0,
         total_bytes: int = 0,
@@ -420,7 +470,7 @@ class UpdateReproducibilitySnapshot(db.Model):
         self.update_id = update_id
         self.model_parameters_id = model_parameters_id
         self.snapshot_dir = snapshot_dir
-        self.study_data_count = study_data_count
+        self.data_uploads_count = data_uploads_count
         self.actions_count = actions_count
         self.groups_count = groups_count
         self.total_bytes = total_bytes

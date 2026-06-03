@@ -2,7 +2,7 @@
 Full dataset + decision-state snapshots before each model update.
 
 Writes JSON files under REPRO_SNAPSHOT_ROOT/<update_id>/:
-  - study_data.json
+  - data_uploads.json (the upstream timeline study_data is derived from)
   - actions.json (includes `state` used at decision time)
   - groups.json
   - metadata.json
@@ -18,9 +18,9 @@ from typing import Any
 from app.extensions import db
 from app.models import (
     Action,
+    DataUpload,
     Group,
     ModelUpdateRequests,
-    StudyData,
     UpdateReproducibilitySnapshot,
 )
 
@@ -52,9 +52,10 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
     out_dir = os.path.abspath(os.path.join(root, update_id))
     os.makedirs(out_dir, exist_ok=True)
 
-    study_rows = StudyData.query.order_by(
-        StudyData.group_id.asc(),
-        StudyData.decision_idx.asc(),
+    upload_rows = DataUpload.query.order_by(
+        DataUpload.group_id.asc(),
+        DataUpload.request_timestamp.asc(),
+        DataUpload.id.asc(),
     ).all()
     action_rows = Action.query.order_by(
         Action.group_id.asc(),
@@ -65,20 +66,13 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
         ModelUpdateRequests.request_timestamp.asc()
     ).all()
 
-    study_payload = []
-    for r in study_rows:
-        study_payload.append(
+    upload_payload = []
+    for r in upload_rows:
+        upload_payload.append(
             {
                 "id": r.id,
                 "group_id": r.group_id,
-                "decision_idx": r.decision_idx,
-                "decision_type": r.decision_type,
-                "action": r.action,
-                "action_prob": r.action_prob,
-                "state": r.state,
-                "raw_context": r.raw_context,
-                "outcome": r.outcome,
-                "reward": r.reward,
+                "data": r.data,
                 "request_timestamp": r.request_timestamp,
                 "created_at": r.created_at,
             }
@@ -95,6 +89,8 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
                 "decision_type": r.decision_type,
                 "action": r.action,
                 "action_prob": r.action_prob,
+                "is_warmup": bool(r.is_warmup),
+                "warmup_reason": r.warmup_reason,
                 "state": r.state,
                 "raw_context": r.raw_context,
                 "random_state": r.random_state,
@@ -111,7 +107,6 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
                 "id": r.id,
                 "group_id": r.group_id,
                 "group_info": r.group_info,
-                "warmup": bool(r.warmup),
                 "created_at": r.created_at,
             }
         )
@@ -123,7 +118,6 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
                 "id": r.id,
                 "update_id": r.update_id,
                 "status": r.status,
-                "callback_url": r.callback_url,
                 "request_timestamp": r.request_timestamp,
                 "created_at": r.created_at,
                 "completed_at": r.completed_at,
@@ -135,14 +129,14 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
         "update_id": update_id,
         "model_parameters_id": model_parameters_id,
         "saved_at": datetime.datetime.now().isoformat(),
-        "study_data_count": len(study_payload),
+        "data_uploads_count": len(upload_payload),
         "actions_count": len(action_payload),
         "groups_count": len(group_payload),
         "updates_count": len(updates_payload),
     }
 
     total = 0
-    total += _write_json(os.path.join(out_dir, "study_data.json"), study_payload)
+    total += _write_json(os.path.join(out_dir, "data_uploads.json"), upload_payload)
     total += _write_json(os.path.join(out_dir, "actions.json"), action_payload)
     total += _write_json(os.path.join(out_dir, "groups.json"), group_payload)
     total += _write_json(
@@ -154,7 +148,7 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
         update_id=update_id,
         model_parameters_id=model_parameters_id,
         snapshot_dir=out_dir,
-        study_data_count=len(study_payload),
+        data_uploads_count=len(upload_payload),
         actions_count=len(action_payload),
         groups_count=len(group_payload),
         total_bytes=total,

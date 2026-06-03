@@ -1,7 +1,6 @@
 import datetime
 import logging
 import uuid
-import requests
 import shutil
 import os
 import csv
@@ -13,11 +12,13 @@ from app.models import (
     ModelUpdateRequests,
     Group,
     Action,
+    DataUpload,
     ThompsonSamplingParams,
     UpdateReproducibilitySnapshot,
 )
 from app.algorithms.base import RLAlgorithm
 from app.extensions import db
+from app.reward_derivation import derive_study_data
 from app.repro_snapshot import save_pre_update_repro_snapshot
 
 update_blueprint = Blueprint("update", __name__)
@@ -36,6 +37,7 @@ def backup_tables(app):
         # List all models to back up
         models = [
             Group,
+            DataUpload,
             Action,
             StudyData,
             ModelUpdateRequests,
@@ -70,20 +72,26 @@ def backup_tables(app):
     return f"{backup_dir}.zip"
 
 
-def process_update_request(
-    app, update_id: str, rl_algorithm: RLAlgorithm, callback_url: str
-):
+def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
     """
-    Process the update request.
+    Process the update request (API-Spec §3.4).
+
+    No callback: completion is observed by reading model_update_requests.status
+    / completed_at. Rewards are derived server-side from the data_uploads
+    timeline before fitting.
     """
     try:
         # Check if the database backup is enabled
-
         if app.config.get("BACKUP_DATABASE"):
             backup_file = backup_tables(app)
             app.logger.info("Database backed up to: %s", backup_file)
 
         with app.app_context():
+            # Derive (action, outcome) pairs from the data_uploads timeline,
+            # writing/refreshing study_data rows before the learner runs.
+            n_derived = derive_study_data(app)
+            app.logger.info("[Update] Derived %d study_data rows", n_derived)
+
             # Get the latest model parameters from the database
             current_params = ModelParameters.query.order_by(
                 ModelParameters.timestamp.desc()
@@ -152,16 +160,6 @@ def process_update_request(
             model_update_request.completed_at = datetime.datetime.now()
             db.session.commit()
 
-            # Send a callback to the callback URL
-            requests.post(
-                callback_url,
-                json={
-                    "status": "completed",
-                    "update_id": update_id,
-                    "timestamp": datetime.datetime.now().isoformat(),
-                },
-            )
-
             # Log the completion
             logging.info(f"[Update] Update ID: {update_id} completed.")
 
@@ -175,20 +173,11 @@ def process_update_request(
             model_update_request = ModelUpdateRequests.query.filter_by(
                 update_id=update_id
             ).first()
-            model_update_request.status = "failed"
-            model_update_request.completed_at = datetime.datetime.now()
-            model_update_request.error_message = str(e)
-            db.session.commit()
-
-            # Send a callback to the callback URL
-            requests.post(
-                callback_url,
-                json={
-                    "status": "failed",
-                    "update_id": update_id,
-                    "message": "Model update failed.",
-                },
-            )
+            if model_update_request is not None:
+                model_update_request.status = "failed"
+                model_update_request.completed_at = datetime.datetime.now()
+                model_update_request.error_message = str(e)
+                db.session.commit()
 
             # Log the completion
             logging.info(f"[Update] Update ID: {update_id} failed.")
@@ -201,16 +190,15 @@ def check_fields(data: dict) -> tuple[bool, str]:
     if not data or "timestamp" not in data:
         return False, "timestamp is required."
 
-    if "callback_url" not in data:
-        return False, "callback_url is required."
-
     return True, ""
 
 
 @update_blueprint.route("/update", methods=["POST"])
 def update_model():
     """
-    Updates the algorithm model.
+    Updates the algorithm model (API-Spec §3.4). Asynchronous; the monitoring
+    algorithm triggers this and watches model_update_requests for completion.
+    There is no callback.
     """
     try:
         data = request.get_json()
@@ -224,7 +212,6 @@ def update_model():
         request_timestamp = data["timestamp"]
         if isinstance(request_timestamp, str):
             request_timestamp = datetime.datetime.fromisoformat(request_timestamp)
-        callback_url = data["callback_url"]
 
         # Get the RL algorithm
         rl_algorithm = current_app.rl_algorithm
@@ -234,19 +221,22 @@ def update_model():
         logging.info(f"[Update] Update ID: {update_id}")
 
         # Add the update request to the database
-        model_update_request = ModelUpdateRequests(
-            update_id, callback_url, request_timestamp
-        )
+        model_update_request = ModelUpdateRequests(update_id, request_timestamp)
         db.session.add(model_update_request)
         db.session.commit()
 
-        # Process the update request in a separate thread
         app = current_app._get_current_object()  # Get the actual app object
-        thread = Thread(
-            target=process_update_request,
-            args=(app, update_id, rl_algorithm, callback_url),
-        )
-        thread.start()
+        if app.config.get("TESTING"):
+            # Run inline under tests: a background thread sharing the in-memory
+            # SQLite connection races the request thread's transaction.
+            process_update_request(app, update_id, rl_algorithm)
+        else:
+            # Process the update request in a separate thread.
+            thread = Thread(
+                target=process_update_request,
+                args=(app, update_id, rl_algorithm),
+            )
+            thread.start()
 
         return jsonify({"status": "processing", "update_id": update_id}), 202
 

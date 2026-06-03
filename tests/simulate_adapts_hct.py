@@ -1,13 +1,13 @@
 """
-ADAPTS-HCT protocol-faithful study replay.
+ADAPTS-HCT protocol-faithful study replay (flat-snapshot contract).
 
-The replay simulates:
-- 25 dyads recruited at roughly one per week
-- 100 active calendar days per dyad
-- weekly Sunday model updates
-- Monday game decisions
-- Monday-Saturday AYA AM/PM and care-partner AM message decisions
-- delayed upload of outcomes via /upload_data
+For each decision the host:
+  1. POSTs a full flat /upload_data snapshot of the dyad's latest values
+     (API-Spec §5.1) shortly before the decision window, then
+  2. POSTs a context-free /action (§3.2).
+
+Rewards are derived server-side at /update time by walking the data_uploads
+timeline (§5.3) — the simulator no longer uploads per-decision outcomes.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ DAYS_ACTIVE = 100
 WEEKS_ACTIVE = (DAYS_ACTIVE + 6) // 7
 DEFAULT_NUM_WEEKS = NUM_DYADS + WEEKS_ACTIVE
 MONDAY_TO_SATURDAY = range(0, 6)
-WARMUP_DYAD_COUNT = 5
 
 
 def _make_timestamp(base_date: datetime.date, hour: int, minute: int = 0) -> str:
@@ -43,12 +42,13 @@ class DyadState:
     aya_latent: float
     cp_latent: float
     relationship_latent: float
-    warmup: bool = False
     aya_decision_index: int = 0
     cp_decision_index: int = 0
     game_decision_index: int = 0
     current_game_on: int = 0
     prior_game_action: str | int = "miss"
+    last_med_adherence: str | int = "miss"
+    last_prompted: bool = False
     notifications: list[dict] = field(default_factory=list)
     medication_reports: dict[tuple[datetime.date, str], dict] = field(default_factory=dict)
     app_opens: dict[str, dict[datetime.date, bool]] = field(
@@ -75,7 +75,8 @@ class ProtocolTrialSimulator:
         self.group_prefix = group_prefix
         self.rng = random.Random(seed)
         self.dyads = self._build_dyads()
-        self.pending_uploads: list[dict] = []
+
+    # ----------------------------------------------------------------- schedule
 
     def iter_schedule_events(self) -> Generator[dict, None, None]:
         add_groups = []
@@ -91,7 +92,6 @@ class ProtocolTrialSimulator:
                         "member_list": [f"aya_{dyad_idx + 1:03d}", f"cp_{dyad_idx + 1:03d}"],
                         "consent_start_date": dyad.recruit_date.isoformat(),
                         "consent_end_date": dyad.consent_end_date.isoformat(),
-                        "warmup": dyad.warmup,
                     },
                 }
             )
@@ -104,10 +104,7 @@ class ProtocolTrialSimulator:
                 {
                     "type": "update",
                     "timestamp": _make_timestamp(sunday, 3, 0),
-                    "payload": {
-                        "timestamp": _make_timestamp(sunday, 3, 0),
-                        "callback_url": "http://localhost:5000/callback",
-                    },
+                    "payload": {"timestamp": _make_timestamp(sunday, 3, 0)},
                 }
             )
 
@@ -121,9 +118,7 @@ class ProtocolTrialSimulator:
                         "timestamp": _make_timestamp(monday, 6, 0),
                         "group_id": dyad.group_id,
                         "decision_type": "dyad_game",
-                        "week": week,
-                        "day_offset": 0,
-                        "slot": None,
+                        "slot": "am",
                     }
                 )
 
@@ -138,8 +133,6 @@ class ProtocolTrialSimulator:
                             "timestamp": _make_timestamp(current_date, 9, 0),
                             "group_id": dyad.group_id,
                             "decision_type": "aya_message",
-                            "week": week,
-                            "day_offset": day_offset,
                             "slot": "am",
                         }
                     )
@@ -149,9 +142,7 @@ class ProtocolTrialSimulator:
                             "timestamp": _make_timestamp(current_date, 9, 5),
                             "group_id": dyad.group_id,
                             "decision_type": "cp_message",
-                            "week": week,
-                            "day_offset": day_offset,
-                            "slot": None,
+                            "slot": "am",
                         }
                     )
                     timeline.append(
@@ -160,8 +151,6 @@ class ProtocolTrialSimulator:
                             "timestamp": _make_timestamp(current_date, 21, 0),
                             "group_id": dyad.group_id,
                             "decision_type": "aya_message",
-                            "week": week,
-                            "day_offset": day_offset,
                             "slot": "pm",
                         }
                     )
@@ -174,101 +163,114 @@ class ProtocolTrialSimulator:
         for event in timeline:
             yield event
 
-    def build_action_payload(self, event: dict) -> dict:
+    # ----------------------------------------------------------- snapshot/action
+
+    def build_snapshot(self, event: dict) -> dict:
+        """Full flat /upload_data snapshot of the dyad's latest values."""
         dyad = self._dyad(event["group_id"])
         event_dt = _parse_timestamp(event["timestamp"])
-        self._ensure_histories(dyad, event_dt.date())
+        date = event_dt.date()
+        self._ensure_histories(dyad, date)
+        slot = event.get("slot") or "am"
+        prev_day = date - datetime.timedelta(days=1)
 
-        decision_type = event["decision_type"]
-
-        if decision_type == "dyad_game":
-            dyad.game_decision_index += 1
-            decision_idx = dyad.game_decision_index
-            context = self._build_game_context(dyad, event_dt.date())
-        elif decision_type == "cp_message":
-            dyad.cp_decision_index += 1
-            decision_idx = dyad.cp_decision_index
-            context = self._build_cp_context(dyad, event_dt.date())
+        prior_week = self._week_in_study(dyad, date - datetime.timedelta(days=7))
+        survey = dyad.weekly_surveys.get(prior_week, {"cp_score": "miss", "aya_score": "miss"})
+        weekly = self._week_in_study(dyad, date)
+        weekly_survey = dyad.weekly_surveys.get(weekly, {})
+        survey_completed = bool(
+            weekly_survey.get("cp_completed") and weekly_survey.get("aya_completed")
+        )
+        if survey_completed:
+            weekly_score = 0.5 * (
+                float(weekly_survey["aya_score"]) + float(weekly_survey["cp_score"])
+            )
         else:
-            dyad.aya_decision_index += 1
-            decision_idx = dyad.aya_decision_index
-            context = self._build_aya_context(dyad, event_dt.date(), event["slot"])
+            weekly_score = 0.0
 
+        aya_diary = self._diary_block(dyad, "aya", prev_day)
+        cp_diary = self._diary_block(dyad, "cp", prev_day)
+        cp_diary_completed = dyad.diaries["cp"].get(prev_day, {"completed": False})["completed"]
+        cp_score = (
+            float(dyad.diaries["cp"][prev_day]["score"]) if cp_diary_completed else 0.0
+        )
+
+        snapshot = {
+            "day_in_study": self._day_in_study(dyad, date),
+            "week_in_study": weekly,
+            "slot": slot,
+            "aya_diary_mood": aya_diary["mood"],
+            "aya_diary_physical": aya_diary["physical"],
+            "aya_app_engagement": self._engagement_level(dyad, "aya", date),
+            "aya_app_burden": round(self._notification_burden(dyad, "aya", date), 3),
+            "aya_missing_rate_7d": round(self._missing_rate(dyad, "aya", date), 3),
+            "previous_med_adherence": dyad.last_med_adherence,
+            "prompted_by_message": bool(dyad.last_prompted),
+            "cp_diary_mood": cp_diary["mood"],
+            "cp_app_engagement": self._engagement_level(dyad, "cp", date),
+            "cp_app_burden": round(self._notification_burden(dyad, "cp", date), 3),
+            "cp_missing_rate_7d": round(self._missing_rate(dyad, "cp", date), 3),
+            "daily_diary_completed": bool(cp_diary_completed),
+            "daily_diary_score": cp_score,
+            "relationship_quality_aya": survey["aya_score"],
+            "relationship_quality_cp": survey["cp_score"],
+            "current_game_on": dyad.current_game_on,
+            "prior_game_action": dyad.prior_game_action,
+            "aya_diary_summary": round(self._diary_summary(dyad, "aya", date), 3),
+            "cp_diary_summary": round(self._diary_summary(dyad, "cp", date), 3),
+            "weekly_survey_completed": survey_completed,
+            "weekly_relationship_score": round(weekly_score, 3),
+        }
+        return snapshot
+
+    def build_action_payload(self, event: dict) -> dict:
+        dyad = self._dyad(event["group_id"])
+        decision_type = event["decision_type"]
+        if decision_type == "dyad_game":
+            decision_idx = dyad.game_decision_index
+            dyad.game_decision_index += 1
+        elif decision_type == "cp_message":
+            decision_idx = dyad.cp_decision_index
+            dyad.cp_decision_index += 1
+        else:
+            decision_idx = dyad.aya_decision_index
+            dyad.aya_decision_index += 1
         return {
             "group_id": dyad.group_id,
             "timestamp": event["timestamp"],
             "decision_idx": decision_idx,
             "decision_type": decision_type,
-            "context": context,
         }
 
-    def schedule_upload(self, payload: dict, response_json: dict):
-        dyad = self._dyad(payload["group_id"])
-        decision_type = payload["decision_type"]
+    def record_action(self, event: dict, response_json: dict) -> None:
+        """Fold the realized action's effect into dyad state so the next
+        snapshot reflects it (notifications, game state, med report)."""
+        dyad = self._dyad(event["group_id"])
+        decision_type = event["decision_type"]
         action = int(response_json["action"])
-        event_dt = _parse_timestamp(payload["timestamp"])
-        due_dt = self._upload_due_datetime(decision_type, event_dt)
+        event_dt = _parse_timestamp(event["timestamp"])
+        date = event_dt.date()
+        slot = event.get("slot") or "am"
 
         if action == 1:
-            role = "aya" if decision_type == "aya_message" else "cp" if decision_type == "cp_message" else "game"
-            dyad.notifications.append(
-                {"role": role, "decision_type": decision_type, "timestamp": payload["timestamp"]}
+            role = (
+                "aya"
+                if decision_type == "aya_message"
+                else "cp"
+                if decision_type == "cp_message"
+                else "game"
             )
+            dyad.notifications.append({"role": role, "timestamp": event["timestamp"]})
+
         if decision_type == "dyad_game":
+            dyad.prior_game_action = dyad.current_game_on if dyad.game_decision_index > 1 else "miss"
             dyad.current_game_on = action
+        elif decision_type == "aya_message":
+            outcome = self._generate_outcome(dyad, "aya_message", slot, action, date)
+            dyad.last_med_adherence = outcome["med_adherence"]
+            dyad.last_prompted = outcome["prompted_by_message"]
 
-        self.pending_uploads.append(
-            {
-                "due_timestamp": due_dt.isoformat(),
-                "action_payload": payload,
-                "action_response": response_json,
-            }
-        )
-        self.pending_uploads.sort(key=lambda item: item["due_timestamp"])
-
-    def pop_due_uploads(self, current_timestamp: str) -> list[dict]:
-        current_dt = _parse_timestamp(current_timestamp)
-        due = []
-        remaining = []
-        for item in self.pending_uploads:
-            if _parse_timestamp(item["due_timestamp"]) <= current_dt:
-                due.append(self._build_upload_payload(item))
-            else:
-                remaining.append(item)
-        self.pending_uploads = remaining
-        return due
-
-    def flush_all_uploads(self) -> list[dict]:
-        items = [self._build_upload_payload(item) for item in self.pending_uploads]
-        self.pending_uploads = []
-        return items
-
-    def _build_upload_payload(self, pending_item: dict) -> dict:
-        action_payload = pending_item["action_payload"]
-        action_response = pending_item["action_response"]
-        dyad = self._dyad(action_payload["group_id"])
-        due_dt = _parse_timestamp(pending_item["due_timestamp"])
-        self._ensure_histories(dyad, due_dt.date())
-        outcome = self._generate_outcome(
-            dyad,
-            action_payload["decision_type"],
-            action_payload["context"],
-            int(action_response["action"]),
-            due_dt.date(),
-        )
-        return {
-            "group_id": action_payload["group_id"],
-            "decision_idx": action_payload["decision_idx"],
-            "decision_type": action_payload["decision_type"],
-            "timestamp": due_dt.isoformat(),
-            "data": {
-                "context": action_payload["context"],
-                "action": action_response["action"],
-                "action_prob": action_response["action_prob"],
-                "state": action_response["state"],
-                "outcome": outcome,
-            },
-        }
+    # ------------------------------------------------------------------ history
 
     def _build_dyads(self) -> list[DyadState]:
         dyads = []
@@ -283,7 +285,6 @@ class ProtocolTrialSimulator:
                     aya_latent=self.rng.uniform(0.35, 0.85),
                     cp_latent=self.rng.uniform(0.35, 0.85),
                     relationship_latent=self.rng.uniform(2.0, 4.5),
-                    warmup=False,  # cohort warmup removed — EB does per-dyad week-1 instead
                 )
             )
         return dyads
@@ -295,16 +296,6 @@ class ProtocolTrialSimulator:
         week_start = self.base_date + datetime.timedelta(weeks=week)
         week_end = week_start + datetime.timedelta(days=6)
         return dyad.recruit_date <= week_end and week_start <= dyad.consent_end_date
-
-    def _upload_due_datetime(self, decision_type: str, event_dt: datetime.datetime) -> datetime.datetime:
-        if decision_type == "aya_message":
-            return event_dt + datetime.timedelta(hours=1)
-        if decision_type == "cp_message":
-            return event_dt + datetime.timedelta(hours=12)
-        return datetime.datetime.combine(
-            event_dt.date() + datetime.timedelta(days=6),
-            datetime.time(18, 0),
-        )
 
     def _ensure_histories(self, dyad: DyadState, up_to_date: datetime.date):
         current_date = dyad.recruit_date
@@ -351,18 +342,8 @@ class ProtocolTrialSimulator:
         week_in_study = self._week_in_study(dyad, sunday_date)
         if week_in_study in dyad.weekly_surveys:
             return
-        # Survey completion: clipped at [0.80, 0.95] so the weekly miss rate is
-        # ~20% (down from the previous ~50%). REL's reward signal is too weak
-        # under heavy missingness — see Brainstorming/slides.tex for the m, √v
-        # diagnostic that motivated the change.
         cp_completed = self.rng.random() < min(0.95, max(0.80, dyad.cp_latent))
         aya_completed = self.rng.random() < min(0.95, max(0.80, dyad.aya_latent))
-        # Action effect: game_on adds +1.0 to relationship_score, game_off
-        # adds 0 (no penalty — was -0.5 in earlier versions). Expected weekly
-        # reward gap ≈ +1.0 · Pr(survey completed) ≈ +0.85. REL pool has
-        # only ~350 obs against D = 14, so its action-contrast variance v
-        # stays ~0.1; we need m ≥ ~0.85 for the smooth-allocation MC to land
-        # close to L_max for late-recruited dyads.
         game_bonus = 1.0 if dyad.current_game_on == 1 else 0.0
         cp_score = round(
             min(5.0, max(1.0, dyad.relationship_latent + game_bonus + self.rng.uniform(-0.7, 0.7))),
@@ -379,121 +360,28 @@ class ProtocolTrialSimulator:
             "aya_score": aya_score if aya_completed else "miss",
         }
 
-    def _build_aya_context(self, dyad: DyadState, current_date: datetime.date, slot: str) -> dict:
-        prior_date = current_date if slot == "pm" else current_date - datetime.timedelta(days=1)
-        prior_slot = "am" if slot == "pm" else "pm"
-        prior_report = dyad.medication_reports.get((prior_date, prior_slot), {"med_adherence": "miss"})
-        prev_day = current_date - datetime.timedelta(days=1)
-        prior_week = self._week_in_study(dyad, current_date - datetime.timedelta(days=7))
-        survey = dyad.weekly_surveys.get(prior_week, {"cp_score": "miss", "aya_score": "miss"})
-        return {
-            "slot": slot,
-            "agent_decision_index": dyad.aya_decision_index,
-            "day_in_study": self._day_in_study(dyad, current_date),
-            "week_in_study": self._week_in_study(dyad, current_date),
-            "prior_med_adherence": prior_report["med_adherence"],
-            "aya_diary": self._diary_block(dyad, "aya", prev_day),
-            "relationship_quality_cp": survey["cp_score"],
-            "relationship_quality_aya": survey["aya_score"],
-            "aya_app_engagement": self._engagement_level(dyad, "aya", current_date),
-            "aya_app_burden": round(self._notification_burden(dyad, "aya", current_date), 3),
-            "aya_missing_rate_7d": round(self._missing_rate(dyad, "aya", current_date), 3),
-            "current_game_on": dyad.current_game_on,
-        }
-
-    def _build_cp_context(self, dyad: DyadState, current_date: datetime.date) -> dict:
-        prev_day = current_date - datetime.timedelta(days=1)
-        prior_week = self._week_in_study(dyad, current_date - datetime.timedelta(days=7))
-        survey = dyad.weekly_surveys.get(prior_week, {"cp_score": "miss", "aya_score": "miss"})
-        return {
-            "agent_decision_index": dyad.cp_decision_index,
-            "day_in_study": self._day_in_study(dyad, current_date),
-            "week_in_study": self._week_in_study(dyad, current_date),
-            "cp_diary": self._diary_block(dyad, "cp", prev_day),
-            "cp_app_engagement": self._engagement_level(dyad, "cp", current_date),
-            "cp_app_burden": round(self._notification_burden(dyad, "cp", current_date), 3),
-            "cp_missing_rate_7d": round(self._missing_rate(dyad, "cp", current_date), 3),
-            "relationship_quality_cp": survey["cp_score"],
-            "relationship_quality_aya": survey["aya_score"],
-            "current_game_on": dyad.current_game_on,
-        }
-
-    def _build_game_context(self, dyad: DyadState, current_date: datetime.date) -> dict:
-        prev_week = self._week_in_study(dyad, current_date - datetime.timedelta(days=7))
-        survey = dyad.weekly_surveys.get(prev_week, {"cp_score": "miss", "aya_score": "miss"})
-        prior_game_action = dyad.current_game_on if dyad.game_decision_index > 1 else "miss"
-        return {
-            "agent_decision_index": dyad.game_decision_index,
-            "week_in_study": self._week_in_study(dyad, current_date),
-            "relationship_quality_aya": survey["aya_score"],
-            "relationship_quality_cp": survey["cp_score"],
-            "aya_app_engagement": self._engagement_level(dyad, "aya", current_date),
-            "cp_app_engagement": self._engagement_level(dyad, "cp", current_date),
-            "aya_app_burden": round(self._notification_burden(dyad, "aya", current_date), 3),
-            "cp_app_burden": round(self._notification_burden(dyad, "cp", current_date), 3),
-            "prior_game_action": prior_game_action,
-            "aya_diary_summary": round(self._diary_summary(dyad, "aya", current_date), 3),
-            "cp_diary_summary": round(self._diary_summary(dyad, "cp", current_date), 3),
-        }
-
     def _generate_outcome(
-        self,
-        dyad: DyadState,
-        decision_type: str,
-        context: dict,
-        action: int,
-        due_date: datetime.date,
+        self, dyad: DyadState, decision_type: str, slot: str, action: int, due_date: datetime.date
     ) -> dict:
         if decision_type == "aya_message":
-            # Action effect on adherence probability. Boost = 0.70 → net Δr ≈
-            # +0.45 under the 4-tier {0,1,2,3} reward (which penalises a=1 by
-            # +1 reward when prompted_by_message=True). With this boost the
-            # learned θ[action] is large enough (~0.45) for the smooth-allocation
-            # to saturate near L_max = 0.8 for late-recruited dyads.
+            missing_rate = self._missing_rate(dyad, "aya", due_date)
+            engagement = self._engagement_level(dyad, "aya", due_date)
             adherence_prob = min(
-                0.95,
-                max(0.05, 0.05 + 0.7 * action + 0.1 * dyad.aya_latent
-                    - 0.05 * context["aya_missing_rate_7d"]),
+                0.95, max(0.05, 0.05 + 0.7 * action + 0.1 * dyad.aya_latent - 0.05 * missing_rate)
             )
-            # Report rate clipped to [0.70, 0.95] (avg ~0.80) so the AYA
-            # reward column is informative for the learner.
-            report_prob = min(0.95, max(0.70, 0.65 + 0.05 * context["aya_app_engagement"]))
+            report_prob = min(0.95, max(0.70, 0.65 + 0.05 * engagement))
             if self.rng.random() > report_prob:
                 med_adherence = "miss"
                 prompted = False
             else:
                 med_adherence = 1 if self.rng.random() < adherence_prob else 0
                 prompted = bool(action == 1 and med_adherence == 1 and self.rng.random() < 0.75)
-            dyad.medication_reports[(due_date, context["slot"])] = {
+            dyad.medication_reports[(due_date, slot)] = {
                 "med_adherence": med_adherence,
                 "prompted_by_message": prompted,
             }
-            return {
-                "med_adherence": med_adherence,
-                "prompted_by_message": prompted,
-            }
-
-        if decision_type == "cp_message":
-            diary = dyad.diaries["cp"].get(due_date, {"completed": False, "score": 0.0})
-            # VERIFICATION TEST: send-CP-message bumps the diary score by 1.0
-            # (clipped at 5.0) when the diary was completed. Net expected
-            # reward gain is ≈ 1.0 * Pr(completed) ≈ 0.5–0.8 per a=1.
-            base_score = float(diary["score"])
-            boosted = min(5.0, base_score + 1.0 * action) if diary["completed"] else 0.0
-            return {
-                "daily_diary_completed": bool(diary["completed"]),
-                "daily_diary_score": boosted,
-            }
-
-        week_idx = self._week_in_study(dyad, due_date)
-        survey = dyad.weekly_surveys.get(
-            week_idx,
-            {"cp_completed": False, "cp_score": 0.0},
-        )
-        return {
-            "weekly_survey_completed": bool(survey["cp_completed"]),
-            "weekly_relationship_score": float(survey["cp_score"]) if survey["cp_completed"] else 0.0,
-        }
+            return {"med_adherence": med_adherence, "prompted_by_message": prompted}
+        return {"med_adherence": "miss", "prompted_by_message": False}
 
     def _day_in_study(self, dyad: DyadState, date_value: datetime.date) -> int:
         return (date_value - dyad.recruit_date).days + 1
@@ -539,11 +427,7 @@ class ProtocolTrialSimulator:
         return burden
 
     def _count_notifications(
-        self,
-        dyad: DyadState,
-        role: str,
-        window_start: datetime.datetime,
-        window_end: datetime.datetime,
+        self, dyad: DyadState, role: str, window_start: datetime.datetime, window_end: datetime.datetime
     ) -> int:
         count = 0
         for notification in dyad.notifications:
@@ -555,11 +439,6 @@ class ProtocolTrialSimulator:
         return count
 
     def _diary_summary(self, dyad: DyadState, role: str, current_date: datetime.date) -> float:
-        """
-        Average completed diary score over the prior 7 days, normalized to [0, 1].
-        Returns 0.0 if no diary was completed in that window. System-side
-        missingness — value is always defined.
-        """
         scores: list[float] = []
         for offset in range(1, 8):
             date_value = current_date - datetime.timedelta(days=offset)
@@ -577,11 +456,9 @@ class ProtocolTrialSimulator:
     def _missing_rate(self, dyad: DyadState, role: str, current_date: datetime.date) -> float:
         dates = [current_date - datetime.timedelta(days=offset) for offset in range(1, 8)]
         total = len(dates)
-        missing = 0
-        for date_value in dates:
-            diary = dyad.diaries[role].get(date_value, {"completed": False})
-            if not diary["completed"]:
-                missing += 1
+        missing = sum(
+            1 for d in dates if not dyad.diaries[role].get(d, {"completed": False})["completed"]
+        )
         if role == "aya":
             med_missing = 0
             med_total = 0
@@ -617,6 +494,10 @@ def iter_simulation_events(
         yield {"type": "action", "timestamp": event["timestamp"], "payload": payload}
 
 
+def _pre_action_timestamp(action_timestamp: str) -> str:
+    return (_parse_timestamp(action_timestamp) - datetime.timedelta(minutes=30)).isoformat()
+
+
 def run_simulation(
     client,
     base_date: datetime.date | None = None,
@@ -639,28 +520,9 @@ def run_simulation(
     )
     results = {"add_group": 0, "action": 0, "upload_data": 0, "update": 0, "errors": []}
 
-    def submit_uploads(payloads: list[dict]):
-        for upload_payload in payloads:
-            upload_response = client.post("/api/v1/upload_data", json=upload_payload)
-            if upload_response.status_code in (200, 201):
-                results["upload_data"] += 1
-            else:
-                results["errors"].append(
-                    {
-                        "type": "upload_data",
-                        "status": upload_response.status_code,
-                        "body": upload_response.get_json(),
-                    }
-                )
-
     for event in simulator.iter_schedule_events():
-        submit_uploads(simulator.pop_due_uploads(event["timestamp"]))
-
         if event["type"] == "add_group":
-            payload = event["payload"]
-            if verbose:
-                print(f"[API] add_group  group_id={payload.get('group_id')}")
-            response = client.post("/api/v1/add_group", json=payload)
+            response = client.post("/api/v1/add_group", json=event["payload"])
             if response.status_code in (200, 201):
                 results["add_group"] += 1
             else:
@@ -670,10 +532,7 @@ def run_simulation(
             continue
 
         if event["type"] == "update":
-            payload = event["payload"]
-            if verbose:
-                print(f"[API] update  timestamp={payload.get('timestamp')}")
-            response = client.post("/api/v1/update", json=payload)
+            response = client.post("/api/v1/update", json=event["payload"])
             if response.status_code in (200, 202):
                 results["update"] += 1
             else:
@@ -682,23 +541,39 @@ def run_simulation(
                 )
             continue
 
+        # action: upload a full snapshot first, then the context-free action.
+        snapshot = simulator.build_snapshot(event)
+        upload_response = client.post(
+            "/api/v1/upload_data",
+            json={
+                "group_id": event["group_id"],
+                "timestamp": _pre_action_timestamp(event["timestamp"]),
+                "data": snapshot,
+            },
+        )
+        if upload_response.status_code in (200, 201):
+            results["upload_data"] += 1
+        else:
+            results["errors"].append(
+                {"type": "upload_data", "status": upload_response.status_code, "body": upload_response.get_json()}
+            )
+
         payload = simulator.build_action_payload(event)
         response = client.post("/api/v1/action", json=payload)
         if response.status_code in (200, 201):
             results["action"] += 1
             response_json = response.get_json()
-            simulator.schedule_upload(payload, response_json)
+            simulator.record_action(event, response_json)
             if verbose:
                 print(
-                    f"[API] action  group_id={payload['group_id']} "
+                    f"[API] action group_id={payload['group_id']} "
                     f"decision_type={payload['decision_type']} "
-                    f"decision_idx={payload['decision_idx']}  "
-                    f"action={response_json.get('action')}  action_prob={response_json.get('action_prob')}"
+                    f"decision_idx={payload['decision_idx']} "
+                    f"action={response_json.get('action')} warmup={response_json.get('warmup')}"
                 )
         else:
             results["errors"].append(
                 {"type": "action", "status": response.status_code, "body": response.get_json()}
             )
 
-    submit_uploads(simulator.flush_all_uploads())
     return results

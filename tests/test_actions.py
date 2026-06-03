@@ -1,39 +1,20 @@
 from copy import deepcopy
 
 from app.routes.action import check_fields
+from tests.conftest import register_group, upload
 
 
-test_group_json = {
+# /action is context-free: only the envelope is sent (API-Spec §3.2).
+test_action_json = {
     "group_id": "test_group_123",
-    "member_list": ["aya_001", "cp_001"],
-    "consent_start_date": "2025-01-05",
-    "consent_end_date": "2025-04-14",
-}
-
-test_data_json = {
-    "group_id": "test_group_123",
-    "timestamp": "2025-01-06T09:00:00",
+    "timestamp": "2026-01-06T09:00:00",
     "decision_idx": 1,
     "decision_type": "aya_message",
-    "context": {
-        "slot": "am",
-        "agent_decision_index": 1,
-        "day_in_study": 2,
-        "week_in_study": 1,
-        "prior_med_adherence": "miss",
-        "aya_diary": {"mood": "miss", "physical": "miss"},
-        "relationship_quality_cp": "miss",
-        "relationship_quality_aya": "miss",
-        "aya_app_engagement": 1,
-        "aya_app_burden": 0.0,
-        "aya_missing_rate_7d": 1.0,
-        "current_game_on": 0,
-    },
 }
 
 
 def test_check_fields_missing_group_id():
-    data = deepcopy(test_data_json)
+    data = deepcopy(test_action_json)
     data.pop("group_id", None)
     result, error_message = check_fields(data)
     assert not result
@@ -41,7 +22,7 @@ def test_check_fields_missing_group_id():
 
 
 def test_check_fields_missing_timestamp():
-    data = deepcopy(test_data_json)
+    data = deepcopy(test_action_json)
     data.pop("timestamp", None)
     result, error_message = check_fields(data)
     assert not result
@@ -49,54 +30,68 @@ def test_check_fields_missing_timestamp():
 
 
 def test_check_fields_decision_idx_not_int():
-    data = deepcopy(test_data_json)
+    data = deepcopy(test_action_json)
     data["decision_idx"] = "a string"
     result, error_message = check_fields(data)
     assert not result
     assert "decision_idx must be an integer." in error_message
 
 
-def test_check_fields_missing_context():
-    data = deepcopy(test_data_json)
-    data.pop("context", None)
+def test_check_fields_missing_decision_type():
+    data = deepcopy(test_action_json)
+    data.pop("decision_type", None)
     result, error_message = check_fields(data)
     assert not result
-    assert "context is required." in error_message
+    assert "decision_type is required." in error_message
 
 
-def test_check_fields_invalid_context_shape():
-    data = deepcopy(test_data_json)
-    data["context"].pop("slot")
+def test_check_fields_invalid_decision_type():
+    data = deepcopy(test_action_json)
+    data["decision_type"] = "not_a_real_agent"
     result, error_message = check_fields(data)
     assert not result
-    assert "slot is required" in error_message
+    assert "Invalid decision_type" in error_message
 
 
 def test_check_fields_valid():
-    result, error_message = check_fields(deepcopy(test_data_json))
+    result, error_message = check_fields(deepcopy(test_action_json))
     assert result
     assert error_message == ""
 
 
 def test_request_action_missing_group(client):
-    response = client.post("/api/v1/action", json=deepcopy(test_data_json))
+    response = client.post("/api/v1/action", json=deepcopy(test_action_json))
     assert response.status_code == 404
     assert response.json["message"] == "Group not found."
 
 
+def test_request_action_without_upload_returns_409(client):
+    register_group(client, "test_group_123")
+    response = client.post("/api/v1/action", json=deepcopy(test_action_json))
+    assert response.status_code == 409
+    assert "upload_data" in response.json["message"]
+
+
 def test_request_action_success(client):
-    client.post("/api/v1/add_group", json=test_group_json)
-    response = client.post("/api/v1/action", json=deepcopy(test_data_json))
+    register_group(client, "test_group_123")
+    upload(client, "test_group_123", "2026-01-06T08:00:00")
+    response = client.post("/api/v1/action", json=deepcopy(test_action_json))
     assert response.status_code == 201
     assert response.json["status"] == "success"
     assert response.json["action"] in (0, 1)
-    assert isinstance(response.json["state"], list)
+    assert "warmup" in response.json
+    # First dyad (cohort < 5) -> warm-up: state is null, prob is 0.5.
+    assert response.json["warmup"] is True
+    assert response.json["warmup_reason"] == "cohort"
+    assert response.json["state"] is None
+    assert response.json["action_prob"] == 0.5
 
 
 def test_request_action_rejects_duplicate_decision_index(client):
-    client.post("/api/v1/add_group", json=test_group_json)
-    first = client.post("/api/v1/action", json=deepcopy(test_data_json))
-    second = client.post("/api/v1/action", json=deepcopy(test_data_json))
+    register_group(client, "test_group_123")
+    upload(client, "test_group_123", "2026-01-06T08:00:00")
+    first = client.post("/api/v1/action", json=deepcopy(test_action_json))
+    second = client.post("/api/v1/action", json=deepcopy(test_action_json))
     assert first.status_code == 201
     assert second.status_code == 400
     assert "Decision index already exists" in second.json["message"]

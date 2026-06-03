@@ -4,58 +4,35 @@ End-to-end reproducibility tests.
 Contract: given the same deterministic buffer + same ordered sequence of
 API events, the algorithm must produce byte-identical (action, action_prob)
 for every decision.
-
-Two levels are covered:
-1. Unit: stamp a fresh, fixed buffer and re-run the same RLSVI action twice;
-   the same (action, action_prob, cursor_end) should come out both times.
-2. Integration: run a small simulator against the live Flask app twice.
-   The second run boots a fresh app (fresh in-memory buffer from the same
-   seed via TestingConfig), replays the same events, and the action sequence
-   must match bit-for-bit.
 """
 from __future__ import annotations
 
-from copy import deepcopy
-
 import numpy as np
 import pytest
-from unittest.mock import patch
 
 from app import create_app, db
 from app.deterministic_sampler import DeterministicSampleStream
-from app.algorithms.empirical_bayes import ThreeAgentEmpiricalBayesAlgorithm
+from tests.conftest import register_group, upload
 
 
-warmup_group = {
-    "group_id": "repro_dyad_001",
-    "member_list": ["aya_001", "cp_001"],
-    "consent_start_date": "2025-01-05",
-    "consent_end_date": "2025-04-14",
-    "warmup": True,
-}
+def _action(client, gid, idx, dt, ts):
+    return client.post(
+        "/api/v1/action",
+        json={"group_id": gid, "timestamp": ts, "decision_idx": idx, "decision_type": dt},
+    )
 
-standard_group = {
-    "group_id": "repro_dyad_002",
-    "member_list": ["aya_002", "cp_002"],
-    "consent_start_date": "2025-01-05",
-    "consent_end_date": "2025-04-14",
-    "warmup": False,
-}
 
-aya_ctx_factory = lambda idx: {
-    "slot": "am",
-    "agent_decision_index": idx,
-    "day_in_study": 1 + idx,
-    "week_in_study": 1,
-    "prior_med_adherence": "miss",
-    "aya_diary": {"mood": "miss", "physical": "miss"},
-    "relationship_quality_cp": "miss",
-    "relationship_quality_aya": "miss",
-    "aya_app_engagement": 1,
-    "aya_app_burden": 0.0,
-    "aya_missing_rate_7d": 1.0,
-    "current_game_on": 0,
-}
+def _setup_nonwarmup_dyad(client, gid):
+    """Register enough dyads to clear the cohort gate and rack up 6 cp_message
+    decisions for `gid` so it clears the week-1 gate (API-Spec §3.2)."""
+    for i in range(5):
+        register_group(client, f"seed_{i:02d}")
+    register_group(client, gid)
+    for k in range(6):
+        ts_day = f"2026-01-{5 + k:02d}"
+        upload(client, gid, f"{ts_day}T05:00:00", slot="am", day_in_study=k + 1)
+        r = _action(client, gid, k, "cp_message", f"{ts_day}T06:00:00")
+        assert r.status_code == 201
 
 
 class TestWarmupDeterminism:
@@ -69,21 +46,18 @@ class TestWarmupDeterminism:
         assert seq1 == seq2
 
     def test_warmup_action_cursor_is_stamped_on_action(self, client):
-        """Every warmup action records sampler_cursor_start/end on Action.random_state."""
-        client.post("/api/v1/add_group", json=deepcopy(warmup_group))
+        """A warmup action records sampler_cursor_start/end on Action.random_state."""
         from app.models import Action
 
-        payload = {
-            "group_id": warmup_group["group_id"],
-            "timestamp": "2025-01-06T09:00:00",
-            "decision_idx": 1,
-            "decision_type": "aya_message",
-            "context": aya_ctx_factory(1),
-        }
-        r = client.post("/api/v1/action", json=payload)
+        register_group(client, "repro_dyad_001")
+        upload(client, "repro_dyad_001", "2026-01-06T08:00:00")
+        r = _action(client, "repro_dyad_001", 1, "aya_message", "2026-01-06T09:00:00")
         assert r.status_code == 201
+        assert r.json["warmup"] is True
         with client.application.app_context():
-            row = Action.query.filter_by(group_id=warmup_group["group_id"], decision_idx=1).first()
+            row = Action.query.filter_by(
+                group_id="repro_dyad_001", decision_idx=1
+            ).first()
             assert row.random_state["mode"] == "warmup"
             s = row.random_state["sampler_cursor_start"]
             e = row.random_state["sampler_cursor_end"]
@@ -92,25 +66,21 @@ class TestWarmupDeterminism:
 
 
 class TestNonWarmupDeterminism:
-    """Standard action under probit-TS must consume ONE uniform (Bernoulli
-    draw) and zero normals."""
+    """A non-warmup action under probit-TS consumes ONE uniform and zero normals."""
 
     def test_standard_action_cursor_stamped(self, client):
-        client.post("/api/v1/add_group", json=deepcopy(standard_group))
         from app.models import Action
 
-        payload = {
-            "group_id": standard_group["group_id"],
-            "timestamp": "2025-01-06T09:00:00",
-            "decision_idx": 1,
-            "decision_type": "aya_message",
-            "context": aya_ctx_factory(1),
-        }
-        r = client.post("/api/v1/action", json=payload)
+        _setup_nonwarmup_dyad(client, "repro_dyad_002")
+        upload(client, "repro_dyad_002", "2026-01-12T08:00:00", day_in_study=7)
+        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-12T09:00:00")
         assert r.status_code == 201
+        assert r.json["warmup"] is False
 
         with client.application.app_context():
-            row = Action.query.filter_by(group_id=standard_group["group_id"], decision_idx=1).first()
+            row = Action.query.filter_by(
+                group_id="repro_dyad_002", decision_type="aya_message", decision_idx=1
+            ).first()
             assert row.random_state["mode"] == "probit_ts"
             normal_delta = (
                 row.random_state["sampler_cursor_end"]["normal"]
@@ -120,39 +90,32 @@ class TestNonWarmupDeterminism:
                 row.random_state["sampler_cursor_end"]["uniform"]
                 - row.random_state["sampler_cursor_start"]["uniform"]
             )
-            assert normal_delta == 0, f"probit-TS should consume 0 normals, got {normal_delta}"
-            assert uniform_delta == 1, f"probit-TS should consume 1 uniform, got {uniform_delta}"
+            assert normal_delta == 0
+            assert uniform_delta == 1
 
 
 class TestClosedFormActionProb:
-    """Action prob should be the exact probit-TS marginal under the block-diagonal
-    prior, with inverse temperature η from ETA_BY_AGENT."""
+    """Action prob is the exact probit-TS marginal under the block-diagonal prior."""
 
     def test_action_prob_matches_closed_form(self, client):
-        client.post("/api/v1/add_group", json=deepcopy(standard_group))
         from app.deterministic_sampler import closed_form_action_prob
         from app.feature_builder import ProtocolRLFeatureBuilder
         from app.algorithms.empirical_bayes import _prior_covariance, ETA_BY_AGENT
-        import numpy as np
 
-        payload = {
-            "group_id": standard_group["group_id"],
-            "timestamp": "2025-01-06T09:00:00",
-            "decision_idx": 1,
-            "decision_type": "aya_message",
-            "context": aya_ctx_factory(1),
-        }
-        r = client.post("/api/v1/action", json=payload)
+        _setup_nonwarmup_dyad(client, "repro_dyad_002")
+        upload(client, "repro_dyad_002", "2026-01-12T08:00:00", day_in_study=7)
+        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-12T09:00:00")
         data = r.get_json()
+        assert data["warmup"] is False
 
         fb = ProtocolRLFeatureBuilder("aya_message")
         state = np.asarray(data["state"], dtype=np.float64)
-        # With no priors and no history the learner uses Σ_0^g from the
-        # block-diagonal prior with η from ETA_BY_AGENT.
         mean = np.zeros(fb.phi_dim)
         cov = _prior_covariance("aya_message")
         eta = ETA_BY_AGENT["aya_message"]
-        expected_prob_1 = closed_form_action_prob(state, mean, cov, fb.expand_base_to_phi, eta=eta)
+        expected_prob_1 = closed_form_action_prob(
+            state, mean, cov, fb.expand_base_to_phi, eta=eta
+        )
         if data["action"] == 1:
             assert data["action_prob"] == pytest.approx(expected_prob_1)
         else:
@@ -160,38 +123,23 @@ class TestClosedFormActionProb:
 
 
 class TestEndToEndReproducibility:
-    """Run a sequence of actions twice on a fresh app each time; the
-    TestingConfig uses an in-memory buffer with a fixed seed, so the second
-    run must produce the same outputs."""
+    """Run a fixed event sequence twice on a fresh app each time; the in-memory
+    buffer is baked from the same seed, so outputs must match bit-for-bit."""
 
     def _record_sequence(self):
-        """Boot a fresh app, fire a fixed event sequence, capture outputs."""
         app = create_app("config.TestingConfig")
         client = app.test_client()
-        with app.app_context():
-            db.create_all()
-        # Stand-in: use a fresh in-memory buffer baked from seed 7 via
-        # TestingConfig.SAMPLE_BUFFER_SEED; the app sets up its own sampler.
-        client.post("/api/v1/add_group", json=deepcopy(warmup_group))
-        client.post("/api/v1/add_group", json=deepcopy(standard_group))
+        register_group(client, "repro_dyad_001")
+        register_group(client, "repro_dyad_002")
 
         outputs: list[tuple] = []
         for idx in range(1, 11):
-            gid = warmup_group["group_id"] if idx % 2 == 0 else standard_group["group_id"]
-            r = client.post(
-                "/api/v1/action",
-                json={
-                    "group_id": gid,
-                    "timestamp": f"2025-01-06T09:00:{idx:02d}",
-                    "decision_idx": idx,
-                    "decision_type": "aya_message",
-                    "context": aya_ctx_factory(idx),
-                },
-            )
+            gid = "repro_dyad_001" if idx % 2 == 0 else "repro_dyad_002"
+            ts = f"2026-01-06T09:00:{idx:02d}"
+            upload(client, gid, f"2026-01-06T08:00:{idx:02d}", day_in_study=idx)
+            r = _action(client, gid, idx, "aya_message", ts)
             body = r.get_json()
-            outputs.append(
-                (gid, idx, body["action"], round(body["action_prob"], 12))
-            )
+            outputs.append((gid, idx, body["action"], round(body["action_prob"], 12)))
 
         with app.app_context():
             db.session.remove()

@@ -255,8 +255,9 @@ class ThreeAgentInfLsviAlgorithm(RLAlgorithm):
     # ---------------------------------------------------------------- helpers
 
     def _is_warmup(self, group_id: str, decision_type: str, decision_idx: int) -> bool:
-        threshold = self._WARMUP_DECISIONS.get(decision_type, 7)
-        return decision_idx < threshold
+        # Warm-up is decided server-side in the /action route (API-Spec §3.2);
+        # the route draws the warm-up action and skips get_action.
+        return False
 
     def _maybe_persist_baselines(
         self, group_id: str, decision_type: str, ordered_rows: list[dict]

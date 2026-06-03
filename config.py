@@ -34,6 +34,16 @@ class Config:
     }
     RL_ALGORITHM_SEED = 42  # Seed for RL Algorithm random state
 
+    # ---- Server-side warm-up (API-Spec §3.2) ----
+    # A decision is purely randomized (Bernoulli(0.5), drawn from the sample
+    # buffer) iff the cohort still has fewer than WARMUP_COHORT_MIN_DYADS
+    # registered dyads, OR the dyad has had fewer than
+    # WARMUP_WEEK1_CP_DECISIONS cp_message decisions (its first active week;
+    # cp_message fires once per active day, so its count is a day clock shared
+    # by all three agents). The host has no say in warm-up.
+    WARMUP_COHORT_MIN_DYADS = 5
+    WARMUP_WEEK1_CP_DECISIONS = 6
+
     # Prior Configuration
     # If you specify a pickle file, it should be a dictionary with the same keys
     # as the entries in the ModelParameters table. Otherwise, see the next setting

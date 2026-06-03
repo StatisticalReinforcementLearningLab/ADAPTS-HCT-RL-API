@@ -85,28 +85,32 @@ class TestContextSchemas:
     def test_cp_schema_has_no_notifications_48h(self):
         assert "notifications_48h" not in CONTEXT_SCHEMAS["cp_message"]
 
-    def test_game_schema_has_diary_summaries(self):
-        assert "aya_diary_summary" in CONTEXT_SCHEMAS["dyad_game"]
-        assert "cp_diary_summary" in CONTEXT_SCHEMAS["dyad_game"]
+    def test_game_schema_omits_diary_summaries(self):
+        # The learner does not read the diary summaries as state (they are
+        # weak/noisy); the dyad_game feature builder is pruned to the five
+        # tailoring variables (API-Spec §5.2).
+        assert "aya_diary_summary" not in CONTEXT_SCHEMAS["dyad_game"]
+        assert "cp_diary_summary" not in CONTEXT_SCHEMAS["dyad_game"]
+
+    def test_game_schema_omits_relationship_quality(self):
+        # relationship_quality_* is the dyad_game outcome, not state.
+        assert "relationship_quality_aya" not in CONTEXT_SCHEMAS["dyad_game"]
+        assert "relationship_quality_cp" not in CONTEXT_SCHEMAS["dyad_game"]
 
     def test_game_schema_has_no_weekly_notifications(self):
         assert "notifications_week_aya" not in CONTEXT_SCHEMAS["dyad_game"]
         assert "notifications_week_cp" not in CONTEXT_SCHEMAS["dyad_game"]
 
-    def test_validate_context_rejects_missing_diary_summary(self):
+    def test_validate_context_rejects_missing_tailoring_var(self):
         ctx = {
             "agent_decision_index": 1,
             "week_in_study": 1,
-            "relationship_quality_aya": 4,
-            "relationship_quality_cp": 3,
             "aya_app_engagement": 2,
             "cp_app_engagement": 3,
             "aya_app_burden": 0.0,
             "cp_app_burden": 0.0,
-            "prior_game_action": "miss",
-            # aya_diary_summary intentionally missing
-            "cp_diary_summary": 0.5,
+            # prior_game_action intentionally missing
         }
         ok, msg = validate_context("dyad_game", ctx)
         assert not ok
-        assert "aya_diary_summary" in msg
+        assert "prior_game_action" in msg

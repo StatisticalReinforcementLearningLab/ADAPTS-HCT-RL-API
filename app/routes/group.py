@@ -24,21 +24,17 @@ def check_fields(data: dict) -> tuple[bool, str]:
     if "consent_end_date" not in data:
         return False, "consent_end_date is required."
 
-    if "warmup" in data and not isinstance(data["warmup"], bool):
-        return False, "warmup must be a boolean."
-
     return True, ""
 
 
 @group_blueprint.route("/add_group", methods=["POST"])
 def add_group():
     """
-    Adds a new group to the database.
+    Registers a dyad (API-Spec §3.1).
 
-    Optional request field `warmup` (bool, default False): when True, this
-    dyad runs on purely-randomized actions for every decision. The caller
-    (server-side scheduler / simulator) is responsible for setting this
-    for the first 5 enrolled dyads per main.tex §2.
+    Warm-up is not a host concern: the API decides it at /action time from the
+    cohort size and the dyad's cp_message decision count (§3.2). There is no
+    `warmup` request field.
     """
     try:
         data = request.get_json()
@@ -50,7 +46,6 @@ def add_group():
 
         # Extract the data
         group_id = data["group_id"]
-        warmup = bool(data.get("warmup", False))
 
         group_info = {
             "member_list": data["member_list"],
@@ -64,19 +59,18 @@ def add_group():
             return jsonify({"status": "failed", "message": "Group already exists."}), 400
 
         # Add new group
-        new_group = Group(group_id=group_id, group_info=group_info, warmup=warmup)
+        new_group = Group(group_id=group_id, group_info=group_info)
         db.session.add(new_group)
         db.session.commit()
 
         # Log the group addition
-        logging.info(f"[Group] Group added: {group_id} warmup={warmup}")
+        logging.info(f"[Group] Group added: {group_id}")
 
         return (
             jsonify(
                 {
                     "status": "success",
                     "group_id": group_id,
-                    "warmup": warmup,
                     "message": "Group added successfully.",
                 }
             ),
