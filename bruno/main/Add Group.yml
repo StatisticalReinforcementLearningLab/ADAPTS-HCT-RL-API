@@ -1,22 +1,33 @@
 info:
   name: Add Group
   type: http
-  seq: 3
+  seq: 1
 
 http:
   method: POST
-  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/add_group
+  url: "http://127.0.0.1:5055/api/v1/add_group"
   body:
     type: json
     data: |-
       {
-        "group_id":"dyad_001",
-        "member_list":["aya_001","cp_001"],
-        "consent_start_date":"2026-01-01",
-        "consent_end_date":"2026-04-23",
-        "warmup":true
+        "group_id": "{{group_id}}",
+        "member_list": ["aya_001", "cp_001"],
+        "consent_start_date": "2026-01-01",
+        "consent_end_date": "2026-04-23"
       }
   auth: inherit
+
+runtime:
+  scripts:
+    - type: pre-request
+      code: |-
+        // Fresh dyad id per run so the collection is re-runnable without
+        // `flask reset-db` (add_group 400s on a duplicate group_id).
+        bru.setVar("group_id", "dyad_" + Date.now());
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "201"
 
 settings:
   encodeUrl: true

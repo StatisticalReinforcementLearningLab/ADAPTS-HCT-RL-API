@@ -1,34 +1,27 @@
 info:
   name: Get Game Decision
   type: http
-  seq: 1
+  seq: 5
 
 http:
   method: POST
-  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/action
+  url: "http://127.0.0.1:5055/api/v1/action"
   body:
     type: json
     data: |-
       {
-          "decision_type": "dyad_game",
-          "group_id": "dyad_001",
-          "decision_idx": 1,
-          "context": {
-              "agent_decision_index": 1,
-              "week_in_study": 1,
-              "relationship_quality_aya": 0.5,
-              "relationship_quality_cp": 0.5,
-              "aya_app_engagement": 1,
-              "cp_app_engagement": 1,
-              "aya_app_burden": 0.5,
-              "cp_app_burden": 0.5,
-              "prior_game_action": 1,
-              "aya_diary_summary": 1,
-              "cp_diary_summary": 1
-          },
-          "timestamp": "2025-11-01T00:00:00.000Z"
+        "decision_type": "dyad_game",
+        "group_id": "{{group_id}}",
+        "decision_idx": 1,
+        "timestamp": "2026-01-01T08:00:00.000Z"
       }
   auth: inherit
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "201"
 
 settings:
   encodeUrl: true

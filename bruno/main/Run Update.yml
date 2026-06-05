@@ -1,18 +1,15 @@
 info:
-  name: Get AYA Decision
+  name: Run Update
   type: http
-  seq: 3
+  seq: 6
 
 http:
   method: POST
-  url: "http://127.0.0.1:5055/api/v1/action"
+  url: "http://127.0.0.1:5055/api/v1/update"
   body:
     type: json
     data: |-
       {
-        "decision_type": "aya_message",
-        "group_id": "{{group_id}}",
-        "decision_idx": 1,
         "timestamp": "2026-01-01T08:00:00.000Z"
       }
   auth: inherit
@@ -21,7 +18,7 @@ runtime:
   assertions:
     - expression: res.status
       operator: eq
-      value: "201"
+      value: "202"
 
 settings:
   encodeUrl: true

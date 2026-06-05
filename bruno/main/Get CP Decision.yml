@@ -1,7 +1,7 @@
 info:
-  name: Get AYA Decision
+  name: Get CP Decision
   type: http
-  seq: 3
+  seq: 4
 
 http:
   method: POST
@@ -10,7 +10,7 @@ http:
     type: json
     data: |-
       {
-        "decision_type": "aya_message",
+        "decision_type": "cp_message",
         "group_id": "{{group_id}}",
         "decision_idx": 1,
         "timestamp": "2026-01-01T08:00:00.000Z"
