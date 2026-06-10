@@ -71,6 +71,8 @@ the monitoring algorithm.
 
 ### 3.1 `POST /api/v1/add_group` — register a dyad
 
+\ziping{Change endpoint name to register_group}
+
 Registers a dyad (a group of two participants) at recruitment.
 
 Request:
@@ -106,6 +108,8 @@ Response `201`:
   "group_id": "dyad_007"
 }
 ```
+
+\ziping{Whenever the group_id exists, I will just update the consent start and end dates. Ignore the member list.}
 
 `400` — group already exists, or a required field is missing.
 
