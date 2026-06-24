@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: "http://127.0.0.1:5055/api/v1/add_group"
+  url: "http://127.0.0.1:5055/api/v1/register_group"
   body:
     type: json
     data: |-
@@ -21,8 +21,8 @@ runtime:
   scripts:
     - type: pre-request
       code: |-
-        // Fresh dyad id per run so the collection is re-runnable without
-        // `flask reset-db` (add_group 400s on a duplicate group_id).
+        // Fresh dyad id per run so each run registers a new dyad rather than
+        // updating an existing one's consent window (re-registration upserts).
         bru.setVar("group_id", "dyad_" + Date.now());
   assertions:
     - expression: res.status

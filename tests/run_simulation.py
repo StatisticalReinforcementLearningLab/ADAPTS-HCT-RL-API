@@ -160,7 +160,7 @@ def main():
     # Pre-flight check: 403 often means port 5000 hit AirPlay on macOS
     try:
         r = requests.post(
-            f"{args.base_url}/api/v1/add_group",
+            f"{args.base_url}/api/v1/register_group",
             json={"group_id": "", "member_list": [], "consent_start_date": "", "consent_end_date": ""},
             timeout=5,
         )

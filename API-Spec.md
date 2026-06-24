@@ -1,10 +1,6 @@
 # ADAPTS-HCT RL API — Specification
 
-**Status:** lives in-repo at `API-Spec.md`. As of **2026-05-31** this is the
-**implemented** host ↔ API contract. The redesign below is live in code
-(`flask db upgrade` applies migration `20260529_01`).
-
-The contract in one paragraph, from the host's perspective:
+The contract from the host's perspective:
 
 1. **`/upload_data` is a flat "latest values" snapshot.** No context/outcome
    distinction; the host sends the latest value of every variable in §5.1. No
@@ -20,58 +16,24 @@ The contract in one paragraph, from the host's perspective:
    reward is computed there. The host never sends rewards or outcomes
    explicitly. See §5.3 and §6.3.
 
-This supersedes an earlier MiWaves-derived draft (`References/ADAPTS-HCT RL
-API Spec.md` in the broader ADAPTS workspace) that used token auth,
-`cur_var`/`past3_var` context, a `seed` field in the action response, Fitbit
-sleep, 48 h notification-dose counts, and a daily + weekly update split.
 
 ---
 
 ## 1. Overview
 
-The RL API is a Flask REST service. The study **host** (app backend +
-scheduler, owned by the Michigan team) calls it at each decision time; the
-API returns a randomized action, logs the latest values of every variable
-the host posts, and re-fits the learner on a periodic schedule triggered by
+The RL API is a Flask REST service. The study **host** (app backend + scheduler, owned by the Michigan team) calls it at each decision time; the API returns a randomized action, logs the latest values of every variable the host posts, and re-fits the learner on a periodic schedule triggered by
 the monitoring algorithm.
 
-- **The API is the system of record for all model state.** The host relays
-  raw values (the latest reading of every field listed in §5.1) and does not
-  compute or store features, parameters, the context/outcome distinction, or
-  the policy. The learner picks the subset of fields it needs per decision
-  type at action time, and pairs actions with their outcomes at update time.
+- **The API is the system of record for all model state.** The host relays raw values and does not compute model parameters. The algorithm API takes inputs the context and generates a sampling probability and the action for each decision call.
 - **Three decision types (agents)**, all served by one learner with cross-dyad pooling:
   `aya_message` (twice daily), `cp_message` (daily), `dyad_game` (weekly).
-- **Reproducibility:** every action and update is deterministic given (i) a pre-sampled
-  random-primitive buffer (`.npz`) and (ii) the ordered event log. See §7.
-
----
-
-## 2. Conventions
-
-- **Base path:** all endpoints are under `/api/v1` (e.g. `POST /api/v1/action`).
-- **Transport:** JSON request and response bodies; `Content-Type: application/json`.
-- **Timestamps:** ISO-8601 strings (`YYYY-MM-DDTHH:MM:SS`), interpreted in the study timezone.
-- **`decision_type`:** one of `"aya_message"`, `"cp_message"`, `"dyad_game"`.
-- **Missing values:** any `/upload_data` field may carry the literal token
-  `"miss"` (or JSON `null`) when the host cannot supply it. Every
-  `/upload_data` is a **full upload**: every field listed in §5.1 must be
-  present (with `"miss"` used to mark explicit missingness). The learner
-  masks `"miss"` values internally via a shared missing indicator; it does
-  **not** reject the decision.
-- **Auth:** none currently implemented. The earlier `/auth/register|login|logout` token flow
-  is **not present** in the service. Access control will be handled at the deployment layer
-  (network / reverse proxy) and is to be revisited with the dev team.
-- **PHI:** the service logs request method, path, and content-length only — never request or
-  response bodies.
+- **Reproducibility:** every action and update is deterministic given (i) a pre-sampled random-primitive buffer (`.npz`) and (ii) the ordered event log.
 
 ---
 
 ## 3. Endpoints
 
-### 3.1 `POST /api/v1/add_group` — register a dyad
-
-\ziping{Change endpoint name to register_group}
+### 3.1 `POST /api/v1/register_group` — register a dyad
 
 Registers a dyad (a group of two participants) at recruitment.
 
@@ -84,9 +46,6 @@ Request:
 | `consent_start_date` | `YYYY-MM-DD` | onboarding/consent complete |
 | `consent_end_date` | `YYYY-MM-DD` | active window end (≈ start + 100 days) |
 
-There is **no** host-supplied `warmup` field. Warm-up is determined entirely
-by the API at decision time from the cohort size and the dyad's CP-decision
-count (§3.2); the host cannot force or suppress it.
 
 Request body (example):
 
@@ -104,18 +63,45 @@ Response `201`:
 ```json
 {
   "status": "success",
-  "message": "Group added successfully.",
+  "message": "Group registered successfully.",
   "group_id": "dyad_007"
 }
 ```
 
-\ziping{Whenever the group_id exists, I will just update the consent start and end dates. Ignore the member list.}
+The canonical path is `/api/v1/register_group`. The former name
+`/api/v1/add_group` is retained as a **deprecated alias** mapping to the same
+handler, so existing host integrations keep working; new callers should use
+`/register_group`.
 
-`400` — group already exists, or a required field is missing.
+**Re-registration with an existing `group_id` is an update, not an error.** When
+`/register_group` is called for a `group_id` that is already registered, the API
+overwrites that dyad's `consent_start_date` and `consent_end_date` from the
+request body and returns `201` with `message: "Group consent window updated."`
+(idempotent upsert). The `member_list` in the repeat request is **ignored** —
+the members recorded at first registration stand. Re-registration is therefore
+the supported mechanism for correcting a dyad's active window.
+
+`400` — a required field is missing or malformed. An existing `group_id` is
+**not** a `400`; it is the upsert described above.
 
 There is **no** `REGISTERED → STARTED → COMPLETED` status machine in the current
 service, and no persisted per-dyad lifecycle flags. A status lifecycle could be
 added if the host needs it.
+
+**Server-side fallback (`/register_group`).** Registration is one-time and off the
+real-time decision path, so the fallback principle is "never lose a recruitable
+dyad," not "serve a default."
+
+- *Duplicate `group_id`* — handled as an idempotent **upsert** of the consent
+  window (implemented, see above), not a hard `400`. Re-registration
+  with corrected dates is a normal path, not an error.
+- *Missing / invalid required field* — reject `400` and surface to the host;
+  this is operator error at recruitment (human-in-the-loop). No partial `groups`
+  row is written, so a corrected re-submit is clean.
+- *DB write failure* (`500`/`503`) — the request writes exactly one `groups`
+  row and has no other side effects, so it is safe to retry with backoff.
+  Because `/register_group` may run any time before the dyad's first decision (§4), a
+  transient outage here never affects an in-flight intervention.
 
 ### 3.2 `POST /api/v1/action` — request an action
 
@@ -200,6 +186,39 @@ the host can safely retry); `409` no `/upload_data` has ever been received for t
 The API may relax the `409` to a `200` with a fully-masked
 state (all variables treated as missing) once the missing-indicator behavior
 has been validated end-to-end. See §9.
+
+**Server-side fallback (`/action`).** `/action` is the only hard-real-time
+endpoint — the host is about to act — so the API must always hand back a usable
+`(action, action_prob)` rather than an error the host cannot recover from. This
+implements fallback **F-A2** ("API reachable but cannot compute a valid π") from
+`Algorithm-Monitoring.md` §2. The contract: `/action` never 5xx-es out without
+leaving the host a safe action; when the learned policy is unreachable it
+degrades to randomization, never to "no decision."
+
+- *Learner / feature failure* — corrupted or non-PSD posterior, feature-builder
+  exception, missing week-1 standardization baseline (monitoring B5), sampler
+  error, or `model_parameters` not yet written (cold-start race that would
+  otherwise surface as `404`/`500`): the API returns `200` with
+  `action = Bernoulli(0.5)`, `action_prob = 0.5`, persists the `actions` row
+  with `is_warmup = true` and `warmup_reason = "fallback"`, and sets a
+  `fallback_flag` in the response. The row is also marked
+  `excluded_from_update = TRUE` (planned column, §9) so a degenerate fit does
+  not poison the next `/update` pool.
+- *No upload history* (`409`): once the masked-state behavior is validated (§9),
+  serve a fully-masked `Bernoulli(0.5)` decision instead of `409`. Until then
+  `409` stands and the host applies its own local **F-A1**
+  (`Bernoulli(0.5)`, `π = 0.5`).
+- *Duplicate `(group_id, decision_type, decision_idx)`* (`400`): the triple is
+  the idempotency key, so on a repeat the API returns the **already-stored**
+  `(action, action_prob, rid)` for that triple rather than re-sampling — a host
+  retry is deterministic and consumes no new buffer primitives.
+- *Genuine `404`* (unregistered `group_id`): a true host error; return `404` and
+  alert. The host falls back to **F-A1** locally.
+- *Determinism preserved*: every fallback draw is still pulled from the
+  deterministic sample buffer and its cursor stamped on the `actions` row, so a
+  fallback decision remains bit-for-bit replayable (the C5 audit). If the buffer
+  itself is unavailable, the API serves `0.5`, flags the row, and raises a red
+  infrastructure alert (monitoring E1).
 
 ### 3.3 `POST /api/v1/upload_data` — provide a full snapshot of dyad data
 
@@ -293,6 +312,27 @@ Responses: `201` success; `404` group not found; `400` missing key, unknown
 key, or type-invalid value (see §5.1 for the accepted set); `500` internal
 error.
 
+**Server-side fallback (`/upload_data`).** Uploads are off the decision path,
+but they are the sole inputs to reward derivation (§5.3), so the fallback
+principle is "preserve every byte, never silently drop." This implements
+fallback **F-U1** from `Algorithm-Monitoring.md` §2.
+
+- *Malformed / schema-invalid / unknown-key / type-invalid payload* (`400`): the
+  API still persists a `data_uploads` row with the raw payload captured verbatim
+  and `excluded_from_update = TRUE` (planned column, §9), then returns `4xx`. The
+  row is preserved for post-trial analysis but never enters the fit. Monitoring
+  B1 (failed upload) and B7 (semantic support violation) fire.
+- *Missing key in the full snapshot*: the lenient default is to **accept** the
+  upload and fill the absent field with `"miss"` server-side (the learner masks
+  it anyway), logged at green severity; the strict default is `400` + F-U1.
+  Which to adopt is a §9 open item — but under either choice the upload is never
+  discarded.
+- *Unknown `group_id`* (`404`): return `404` and alert; optionally buffer the
+  payload pending registration. No partial state is written.
+- *DB write failure* (`500`/`503`): `/upload_data` is append-only with no
+  idempotency key, so the host may safely retry; a duplicate row is harmless
+  (the latest-value lookup is unchanged).
+
 ### 3.4 `POST /api/v1/update` — re-fit the model
 
 Asynchronous. The **monitoring algorithm** (a separate component, see
@@ -342,6 +382,32 @@ The earlier draft's split into daily `/update_parameters` + weekly `/update_hype
 is **not** implemented; there is a single `/update`. The monitoring algorithm should re-ping
 if a scheduled update is missed.
 
+**Server-side fallback (`/update`).** `/update` is asynchronous and off the
+decision path, so the fallback principle is "never publish a bad policy; keep
+serving the last good one." This implements fallbacks **F-U2** and **F-U3** from
+`Algorithm-Monitoring.md` §2. A pre-update reproducibility snapshot (and optional
+backup) is written **before** fitting, so a failed update never corrupts the
+prior good state.
+
+- *Fit fails the C3 posterior-sanity gate* (NaN/∞, non-PSD covariance, or trace
+  blow-up): the new `model_parameters` row is **not** published; the previous
+  parameters stay in force, so `/action` keeps serving the last good policy. The
+  `model_update_requests` row is marked `status = "failed"` with the reason in
+  `error_message` (**F-U2**). The C3 gate runs *before* publication precisely so a
+  degenerate fit can never reach a decision.
+- *Empty batch* (no new `study_data` since the last successful update): skip the
+  fit, keep previous parameters, mark the request `completed`, and log green
+  (**F-U3**) so the data analyst can tell a deliberate skip from a stalled learner.
+- *Per-action reward-derivation error*: skip the offending `actions` row (leave
+  its `study_data.reward` `NULL` for a later re-run), derive the rest, and
+  continue — one bad outcome window does not fail the whole update. Monitoring B2
+  tracks the resulting NULL-reward rate.
+- *Background-thread crash / timeout*: the updater sets `status = "failed"` on any
+  unhandled exception; if it dies before that, the row stays `processing` and
+  monitoring C1 fires after 30 min and re-pings. Either way the previous
+  `model_parameters` remain active, and the host keeps fetching actions under the
+  last good policy.
+
 ### 3.5 Monitoring (auxiliary)
 
 A monitoring blueprint is mounted at `/api/v1/monitor` (health/diagnostics per the
@@ -375,7 +441,7 @@ window, and `/action` fires relative to *their* windows. (The bundled
 simulator approximates this with a single Sunday clock; production issues
 per-window calls.)
 
-**One-time, at recruitment.** Host POSTs `/add_group` once per dyad (any
+**One-time, at recruitment.** Host POSTs `/register_group` once per dyad (any
 time before the first decision; dyads enroll ≈1/week, non-sequential, with
 overlapping active windows).
 
@@ -888,7 +954,7 @@ from the column listings below.
 
 ### 6.1 `groups`
 
-One row per dyad. Written by `/add_group`.
+One row per dyad. Written by `/register_group`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1094,10 +1160,38 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
 - **Missed `/update`.** The monitoring algorithm should re-ping if a
   scheduled update is missed; the API itself does not schedule.
 - **API unreachable:** the host draws `Bernoulli(0.5)` locally for that decision and flags it
-  as excluded from the next update (`excluded_from_update`), per `Study_Design/main.tex`
+  as excluded from the next update (`excluded_from_update`), per `Algorithm-Monitoring.md` §2
   fallback rows F-A1/F-A2. **[planned: confirm the host marks these and that the API can
   ingest the flag on `/upload_data`.]**
 - See `ADAPTS-HCT-RL-API/Possible_System_Failure.md` for the full failure-mode catalog.
+
+### 8.1 Per-endpoint server-side fallback (summary)
+
+Each endpoint's fallback is detailed inline in §3; this table consolidates the
+"what the app server does on failure" view. Fallback IDs (F-A1, F-A2, F-U1,
+F-U2, F-U3) are defined in `Algorithm-Monitoring.md` §2. Guiding principle by
+endpoint: `/register_group` — never lose a recruitable dyad; `/action` — always return
+a safe action, never "no decision"; `/upload_data` — preserve every byte, never
+silently drop; `/update` — never publish a bad policy, keep the last good one.
+
+| Endpoint | Failure | Server-side fallback | Fallback ID | Monitoring |
+|---|---|---|---|---|
+| `/register_group` | duplicate `group_id` | idempotent upsert of consent window (not `400`) | — | — |
+| `/register_group` | missing/invalid field | reject `400`; no partial row; host re-submits | — | — |
+| `/register_group` | DB write failure | safe retry with backoff (single-row, side-effect-free) | — | E1 |
+| `/action` | learner/feature/posterior failure, missing baseline, cold-start race | `200`, `action_prob = 0.5`, `Bernoulli(0.5)` from buffer; `is_warmup`, `warmup_reason="fallback"`, `excluded_from_update=TRUE` | F-A2 | B5, C3 |
+| `/action` | no upload history | `409` today → host local `Bernoulli(0.5)`; planned masked-state `200` | F-A1 | A2 |
+| `/action` | duplicate decision triple | return the already-stored `(action, prob, rid)` (deterministic replay) | — | A3 |
+| `/action` | unregistered `group_id` | `404` + alert; host falls back locally | F-A1 | — |
+| `/action` | sample buffer unavailable | serve `0.5`, flag row, red infra alert | F-A2 | E1 |
+| `/upload_data` | malformed/schema-invalid payload | persist raw verbatim, `excluded_from_update=TRUE`, return `4xx` | F-U1 | B1, B7 |
+| `/upload_data` | missing key | accept + server-fill `"miss"` (lenient) **or** `400`+F-U1 (strict); §9 | F-U1 | B7 |
+| `/upload_data` | unknown `group_id` | `404` + alert; optional buffer pending registration | — | — |
+| `/upload_data` | DB write failure | safe retry (append-only, no idempotency key) | — | E1 |
+| `/update` | C3 sanity-gate failure | do not publish; keep previous params; mark `failed` | F-U2 | C3 |
+| `/update` | empty batch | skip fit; keep previous params; mark `completed`, log green | F-U3 | — |
+| `/update` | per-action reward-derivation error | skip that row (`reward = NULL`), derive the rest | — | B2 |
+| `/update` | background-thread crash / timeout | row stays `processing` → C1 re-pings; previous params stay active | F-U2 | C1 |
 
 ---
 
@@ -1157,3 +1251,9 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
     The older doc also describes only the once-per-week events and does
     not specify the daily AYA-AM / CP / AYA-PM cadence. Decision needed:
     update the older doc to match §4, or shift §4 to Sunday.
+12. ~~**`/add_group` upsert on an existing `group_id`** (§3.1).~~ **Done.**
+    `register_group` (`app/routes/group.py`) now upserts the consent window on a
+    repeat `group_id` (updates `consent_start_date` / `consent_end_date`, ignores
+    `member_list`, returns `201`). The endpoint was also renamed
+    `/add_group` → `/register_group` (the old path stays as a deprecated alias).
+    Covered by `tests/test_groups.py`.

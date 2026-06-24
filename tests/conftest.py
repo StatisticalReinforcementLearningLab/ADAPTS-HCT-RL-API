@@ -56,7 +56,7 @@ def full_snapshot(**overrides):
 
 def register_group(client, group_id, start="2026-01-05", end="2026-04-15"):
     return client.post(
-        "/api/v1/add_group",
+        "/api/v1/register_group",
         json={
             "group_id": group_id,
             "member_list": [f"aya_{group_id}", f"cp_{group_id}"],

@@ -522,7 +522,7 @@ def run_simulation(
 
     for event in simulator.iter_schedule_events():
         if event["type"] == "add_group":
-            response = client.post("/api/v1/add_group", json=event["payload"])
+            response = client.post("/api/v1/register_group", json=event["payload"])
             if response.status_code in (200, 201):
                 results["add_group"] += 1
             else:

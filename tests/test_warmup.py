@@ -35,7 +35,7 @@ def test_add_group_has_no_warmup_field(client):
 def test_add_group_ignores_warmup_in_payload(client):
     # A stray warmup field is simply ignored (no longer part of the contract).
     response = client.post(
-        "/api/v1/add_group",
+        "/api/v1/register_group",
         json={
             "group_id": "dyad_002",
             "member_list": ["a", "b"],
