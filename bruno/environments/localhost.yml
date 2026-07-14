@@ -1,0 +1,4 @@
+name: localhost
+variables:
+  - name: baseURL
+    value: http://127.0.0.1:5001

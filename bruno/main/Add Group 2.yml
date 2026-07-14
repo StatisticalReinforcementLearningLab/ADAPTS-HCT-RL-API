@@ -1,17 +1,17 @@
 info:
-  name: Add Group
+  name: Add Group 2
   type: http
-  seq: 3
+  seq: 4
 
 http:
   method: POST
-  url: https://leeds-hydrogen-strictly-queens.trycloudflare.com/api/v1/add_group
+  url: "{{baseURL}}/api/v1/add_group"
   body:
     type: json
     data: |-
       {
-        "group_id":"dyad_001",
-        "member_list":["aya_001","cp_001"],
+        "group_id":"group_2",
+        "member_list":["pt3@example.com","pt4@example.com"],
         "consent_start_date":"2026-01-01",
         "consent_end_date":"2026-04-23",
         "warmup":true
