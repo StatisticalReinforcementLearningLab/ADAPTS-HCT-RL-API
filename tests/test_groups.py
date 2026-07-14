@@ -1,5 +1,5 @@
 import pytest
-from app.routes.group import check_fields, add_group
+from app.routes.group import check_fields, register_group
 from app.models import Group, StudyData
 from unittest.mock import patch, MagicMock
 
@@ -28,12 +28,12 @@ def test_check_fields_group_valid():
     assert result
     assert error_message == ""
 
-def test_add_group_missing_field(client):
+def test_register_group_missing_field(client):
     """
-    Tests adding a group without the required fields.
+    Tests registering a group without the required fields.
     """
     response = client.post(
-        "/api/v1/add_group",
+        "/api/v1/register_group",
         json={
             "member_list": ["member1", "member2"],
             "consent_start_date": "2025-01-01",
@@ -46,33 +46,50 @@ def test_add_group_missing_field(client):
 
 
 
-def test_add_group_duplicate(client):
+def test_register_group_reregister_updates_consent(client):
     """
-    Tests adding a duplicate group.
+    Re-registering an existing group updates the consent window (upsert) and
+    leaves member_list unchanged. It returns 201, not 400.
     """
-    # Add the group for the first time
-    client.post(
-        "/api/v1/add_group",
+    # Register the group for the first time
+    first = client.post(
+        "/api/v1/register_group",
         json=test_json,
     )
+    assert first.status_code == 201
 
-    # Attempt to add the same group again
+    # Re-register the same group with a new consent window and a different
+    # member_list, which should be ignored.
     response = client.post(
-        "/api/v1/add_group",
-        json=test_json,
+        "/api/v1/register_group",
+        json={
+            "group_id": "test_group_123",
+            "member_list": ["someone_else"],
+            "consent_start_date": "2025-02-01",
+            "consent_end_date": "2025-05-01",
+        },
     )
 
-    assert response.status_code == 400
-    assert response.json["message"] == "Group already exists."
+    assert response.status_code == 201
+    assert response.json["message"] == "Group consent window updated."
+
+    # The persisted consent dates changed; member_list is unchanged.
+    grp = Group.query.filter_by(group_id="test_group_123").first()
+    assert grp.group_info["consent_start_date"] == "2025-02-01"
+    assert grp.group_info["consent_end_date"] == "2025-05-01"
+    assert grp.group_info["member_list"] == ["member1", "member2"]
+
+    # No duplicate row was created.
+    assert Group.query.filter_by(group_id="test_group_123").count() == 1
 
 
-def test_add_group_success(client):
+def test_register_group_success(client):
     """
-    Tests adding a group successfully.
+    Tests registering a group successfully.
     """
 
     response = client.post(
-        "/api/v1/add_group",
+        "/api/v1/register_group",
         json=test_json,
     )
 
@@ -80,5 +97,17 @@ def test_add_group_success(client):
 
     assert response.status_code == 201
     assert response.json["group_id"] == "test_group_123"
-    assert response.json["message"] == "Group added successfully."
+    assert response.json["message"] == "Group registered successfully."
 
+
+def test_add_group_alias_still_works(client):
+    """
+    The deprecated /add_group path maps to the same handler.
+    """
+    response = client.post(
+        "/api/v1/add_group",
+        json=test_json,
+    )
+
+    assert response.status_code == 201
+    assert response.json["group_id"] == "test_group_123"

@@ -300,6 +300,7 @@ def register_cli_commands(app):
         import os
         from app.models import (
             Group,
+            DataUpload,
             Action,
             StudyData,
             ModelUpdateRequests,
@@ -312,6 +313,7 @@ def register_cli_commands(app):
         os.makedirs(export_dir, exist_ok=True)
         models = [
             Group,
+            DataUpload,
             Action,
             StudyData,
             ModelUpdateRequests,
@@ -398,51 +400,47 @@ def register_cli_commands(app):
         Idempotent schema-upgrade for in-place ADAPTS-HCT changes that arrived
         between releases.
 
-        Adds:
-        - groups.warmup boolean column (default False) — needed for the warmup
-          override on the first 5 dyads.
-        - standardization_baselines table — populated lazily by the algorithm.
+        Creates any new tables (e.g. data_uploads, standardization_baselines)
+        and idempotently adds the new flat-contract columns
+        (actions.is_warmup / actions.warmup_reason, study_data.derived_at).
+        Column drops (groups.warmup, model_update_requests.callback_url) and
+        renames are handled by `flask db upgrade` (Alembic), not here.
 
         Safe to run repeatedly. Works against PostgreSQL and SQLite.
         """
         from sqlalchemy import inspect, text
 
         inspector = inspect(db.engine)
+        dialect = db.engine.dialect.name
+        bool_default = "FALSE" if dialect != "sqlite" else "0"
 
-        # 1. Add groups.warmup if it doesn't already exist.
-        if "groups" in inspector.get_table_names():
-            existing_cols = {c["name"] for c in inspector.get_columns("groups")}
-            if "warmup" not in existing_cols:
-                dialect = db.engine.dialect.name
-                if dialect == "postgresql":
-                    stmt = text(
-                        "ALTER TABLE groups "
-                        "ADD COLUMN warmup BOOLEAN NOT NULL DEFAULT FALSE"
-                    )
-                elif dialect == "sqlite":
-                    stmt = text(
-                        "ALTER TABLE groups "
-                        "ADD COLUMN warmup BOOLEAN NOT NULL DEFAULT 0"
-                    )
-                else:
-                    # Generic fallback; may need tweaking for exotic dialects.
-                    stmt = text(
-                        "ALTER TABLE groups "
-                        "ADD COLUMN warmup BOOLEAN NOT NULL DEFAULT FALSE"
-                    )
+        new_columns = {
+            "actions": [
+                ("is_warmup", f"BOOLEAN NOT NULL DEFAULT {bool_default}"),
+                ("warmup_reason", "VARCHAR(32)"),
+            ],
+            "study_data": [
+                ("derived_at", "TIMESTAMP"),
+            ],
+        }
+        for table_name, cols in new_columns.items():
+            if table_name not in inspector.get_table_names():
+                continue
+            existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+            for col_name, col_type in cols:
+                if col_name in existing_cols:
+                    print(f"  - {table_name}.{col_name} already present")
+                    continue
                 with db.engine.begin() as conn:
-                    conn.execute(stmt)
-                print(f"  + added groups.warmup ({dialect})")
-            else:
-                print("  - groups.warmup already present")
-        else:
-            print("  ! groups table not present yet; will be created by create_all")
+                    conn.execute(
+                        text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                    )
+                print(f"  + added {table_name}.{col_name} ({dialect})")
 
-        # 2. Create any tables that exist in the model metadata but not in the
-        #    DB (e.g. standardization_baselines, future tables).
+        # Create any tables in the model metadata but not in the DB
+        # (e.g. data_uploads, standardization_baselines).
         before = set(inspector.get_table_names())
         db.create_all()
-        # Re-inspect after create_all
         after = set(inspect(db.engine).get_table_names())
         new_tables = sorted(after - before)
         if new_tables:

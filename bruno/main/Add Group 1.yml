@@ -1,22 +1,33 @@
 info:
   name: Add Group 1
   type: http
-  seq: 3
+  seq: 1
 
 http:
   method: POST
-  url: "{{baseURL}}/api/v1/add_group"
+  url: "{{baseURL}}/api/v1/register_group"
   body:
     type: json
     data: |-
       {
-        "group_id":"group_1",
-        "member_list":["pt1@example.com","pt2@example.com"],
-        "consent_start_date":"2026-01-01",
-        "consent_end_date":"2026-04-23",
-        "warmup":true
+        "group_id": "{{group_id}}",
+        "member_list": ["aya_001", "cp_001"],
+        "consent_start_date": "2026-01-01",
+        "consent_end_date": "2026-04-23"
       }
   auth: inherit
+
+runtime:
+  scripts:
+    - type: pre-request
+      code: |-
+        // Fresh dyad id per run so each run registers a new dyad rather than
+        // updating an existing one's consent window (re-registration upserts).
+        bru.setVar("group_id", "dyad_" + Date.now());
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "201"
 
 settings:
   encodeUrl: true

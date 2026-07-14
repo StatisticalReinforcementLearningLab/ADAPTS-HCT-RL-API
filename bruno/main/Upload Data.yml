@@ -1,0 +1,54 @@
+info:
+  name: Upload Data
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "http://127.0.0.1:5055/api/v1/upload_data"
+  body:
+    type: json
+    data: |-
+      {
+        "group_id": "{{group_id}}",
+        "timestamp": "2026-01-01T08:00:00.000Z",
+        "data": {
+          "day_in_study": 1,
+          "week_in_study": 1,
+          "slot": "am",
+          "aya_diary_mood": 0.5,
+          "aya_diary_physical": 0.5,
+          "aya_app_engagement": 2,
+          "aya_app_burden": 0.0,
+          "aya_missing_rate_7d": 0.0,
+          "previous_med_adherence": 1,
+          "prompted_by_message": false,
+          "cp_diary_mood": 0.5,
+          "cp_app_engagement": 2,
+          "cp_app_burden": 0.0,
+          "cp_missing_rate_7d": 0.0,
+          "daily_diary_completed": true,
+          "daily_diary_score": 1.0,
+          "relationship_quality_aya": 0.5,
+          "relationship_quality_cp": 0.5,
+          "current_game_on": 0,
+          "prior_game_action": 0,
+          "aya_diary_summary": 0.5,
+          "cp_diary_summary": 0.5,
+          "weekly_survey_completed": true,
+          "weekly_relationship_score": 1.0
+        }
+      }
+  auth: inherit
+
+runtime:
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "201"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

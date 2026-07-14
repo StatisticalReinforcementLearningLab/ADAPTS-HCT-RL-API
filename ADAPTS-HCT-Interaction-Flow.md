@@ -10,10 +10,10 @@ Here is a timeline of how the server will call this RL API to provide the RL alg
 Every dyad when recruited will be active for 100 days. The server will call the RL API group.py to register the dyad.
 
 Each week:
-1. Sunday evening at 3AM EST, the server will call the RL API to update the model.
-2. Sunday morning at 6AM EST, the server will call the RL API for every each active dyad (group in this repository) to request a **game action**.
-3. Sunday morning at 9AM EST, the server will call the RL API for every each active AYA to request an AYA **message action**.
-4. Sunday morning at 9AM EST, the server will call the RL API for every each active care partner to request a care partner **message action**.
+1. Monday at 3AM EST, the server will call the RL API to update the model.
+2. Monday morning at 6AM EST, the server will call the RL API for every each active dyad (group in this repository) to request a **game action**.
+3. Monday morning at 9AM EST, the server will call the RL API for every each active AYA to request an AYA **message action**.
+4. Monday morning at 9AM EST, the server will call the RL API for every each active care partner to request a care partner **message action**.
 
 ## Simulation Logic
 

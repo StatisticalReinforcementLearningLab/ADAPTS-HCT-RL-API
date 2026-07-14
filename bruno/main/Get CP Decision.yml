@@ -1,16 +1,16 @@
 info:
-  name: Get AYA Decision
+  name: Get CP Decision
   type: http
-  seq: 5
+  seq: 4
 
 http:
   method: POST
-  url: "{{baseURL}}/api/v1/action"
+  url: "http://127.0.0.1:5055/api/v1/action"
   body:
     type: json
     data: |-
       {
-        "decision_type": "aya_message",
+        "decision_type": "cp_message",
         "group_id": "{{group_id}}",
         "decision_idx": 1,
         "timestamp": "2026-01-01T08:00:00.000Z"

@@ -40,28 +40,17 @@ def estimate_trial_resources(
     local_fit_rows = 0
     study_records_by_type_group = defaultdict(int)
 
-    def deterministic_action(payload: dict) -> int:
-        decision_type = payload["decision_type"]
-        context = payload["context"]
+    def deterministic_action(decision_type: str, snapshot: dict) -> int:
         if decision_type == "dyad_game":
-            return int(context["aya_app_engagement"] + context["cp_app_engagement"] >= 6)
+            return int(snapshot["aya_app_engagement"] + snapshot["cp_app_engagement"] >= 6)
         if decision_type == "cp_message":
-            return int(context["cp_app_engagement"] >= 3 or context["cp_missing_rate_7d"] > 0.4)
-        return int(context["aya_app_engagement"] >= 3 or context["aya_missing_rate_7d"] > 0.4)
+            return int(snapshot["cp_app_engagement"] >= 3 or snapshot["cp_missing_rate_7d"] > 0.4)
+        return int(snapshot["aya_app_engagement"] >= 3 or snapshot["aya_missing_rate_7d"] > 0.4)
 
     def size_of(value: dict) -> int:
         return len(json.dumps(value, sort_keys=True).encode("utf-8"))
 
-    def submit_uploads(payloads: list[dict]):
-        nonlocal bytes_seen, counts, study_records_by_type_group
-        for upload_payload in payloads:
-            counts["upload_data"] += 1
-            bytes_seen["upload_data"] += size_of(upload_payload)
-            study_records_by_type_group[(upload_payload["decision_type"], upload_payload["group_id"])] += 1
-
     for event in simulator.iter_schedule_events():
-        submit_uploads(simulator.pop_due_uploads(event["timestamp"]))
-
         if event["type"] == "add_group":
             counts["add_group"] += 1
             bytes_seen["add_group"] += size_of(event["payload"])
@@ -85,19 +74,18 @@ def estimate_trial_resources(
                     )
             continue
 
+        # action: one full-snapshot upload immediately precedes every action.
+        snapshot = simulator.build_snapshot(event)
+        counts["upload_data"] += 1
+        bytes_seen["upload_data"] += size_of(snapshot)
+        study_records_by_type_group[(event["decision_type"], event["group_id"])] += 1
+
         payload = simulator.build_action_payload(event)
         counts["action"] += 1
         bytes_seen["action"] += size_of(payload)
-        action = deterministic_action(payload)
-        simulated_response = {
-            "action": action,
-            "action_prob": 0.5,
-            "state": [0.0] * max(1, len(payload["context"])),
-        }
-        simulator.schedule_upload(payload, simulated_response)
+        action = deterministic_action(event["decision_type"], snapshot)
+        simulator.record_action(event, {"action": action, "action_prob": 0.5})
         observed_groups[payload["decision_type"]].add(payload["group_id"])
-
-    submit_uploads(simulator.flush_all_uploads())
 
     # EB snapshot rows now live in the unified ``model_parameters`` table:
     # one bootstrap row at app init, one "policy" row per /update, plus
