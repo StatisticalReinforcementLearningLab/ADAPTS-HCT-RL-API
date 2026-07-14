@@ -6,7 +6,7 @@ from tests.conftest import register_group, upload
 
 def test_update_model_success(client):
     """
-    /update is async with no callback (API-Spec §3.4): completion is observed
+    /update is async with no callback (API-Spec §2.4): completion is observed
     by reading model_update_requests. Rewards are derived server-side from the
     data_uploads timeline.
     """

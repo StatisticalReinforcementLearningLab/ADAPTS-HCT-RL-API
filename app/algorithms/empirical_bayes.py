@@ -7,7 +7,7 @@ Implements the algorithm described in Study_Design/main.tex:
 - empirical Bayes pooling across dyads within each stream (Algorithm 3)
 - posterior shrinkage for action selection
 - warm-up (purely-randomized Bernoulli(0.5) seed decisions) is decided
-  server-side in the /action route (API-Spec §3.2); the learner is only
+  server-side in the /action route (API-Spec §2.2); the learner is only
   invoked for non-warm-up decisions
 - per-agent discount factors and per-agent EB refresh cadence
 - per-dyad week-1 standardization baselines applied at feature-build time
@@ -393,7 +393,7 @@ class ThreeAgentEmpiricalBayesAlgorithm(RLAlgorithm):
 
     def _is_warmup(self, group_id: str, decision_type: str, decision_idx: int) -> bool:
         # Warm-up is now decided server-side in the /action route (API-Spec
-        # §3.2: cohort < 5 or first CP-week). The route draws the Bernoulli(0.5)
+        # §2.2: cohort < 5 or first CP-week). The route draws the Bernoulli(0.5)
         # action itself and never calls get_action during warm-up, so the
         # learner no longer gates on decision_idx.
         return False

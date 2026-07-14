@@ -3,11 +3,11 @@ ADAPTS-HCT protocol-faithful study replay (flat-snapshot contract).
 
 For each decision the host:
   1. POSTs a full flat /upload_data snapshot of the dyad's latest values
-     (API-Spec §5.1) shortly before the decision window, then
-  2. POSTs a context-free /action (§3.2).
+     (API-Spec §4.1) shortly before the decision window, then
+  2. POSTs a context-free /action (§2.2).
 
 Rewards are derived server-side at /update time by walking the data_uploads
-timeline (§5.3) — the simulator no longer uploads per-decision outcomes.
+timeline — the simulator no longer uploads per-decision outcomes.
 """
 
 from __future__ import annotations

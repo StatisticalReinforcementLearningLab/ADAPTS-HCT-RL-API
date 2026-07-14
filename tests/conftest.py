@@ -19,7 +19,7 @@ def client(app):
     return app.test_client()
 
 
-# --- shared helpers for the flat-snapshot contract (API-Spec §5.1) ---
+# --- shared helpers for the flat-snapshot contract (API-Spec §4.1) ---
 
 def full_snapshot(**overrides):
     """A complete /upload_data `data` snapshot (every field present)."""

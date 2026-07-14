@@ -179,10 +179,10 @@ def agent_index_for_context(decision_type: str, context: dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Flat snapshot contract (API-Spec §5.1). /upload_data carries a full snapshot
+# Flat snapshot contract (API-Spec §4.1). /upload_data carries a full snapshot
 # of every variable below; the host does not tag context vs. outcome. The
-# learner projects the subset each decision_type needs at /action time (§5.2)
-# and reads the outcome fields at /update time (§5.3).
+# learner projects the subset each decision_type needs at /action time and
+# reads the outcome fields at /update time.
 # ---------------------------------------------------------------------------
 SNAPSHOT_SCHEMA: dict[str, str] = {
     # bookkeeping
@@ -250,10 +250,10 @@ def project_snapshot(
 ) -> dict[str, Any]:
     """
     Project the flat snapshot to the per-agent context the feature builder
-    consumes (API-Spec §5.2). The API owns the per-(dyad, decision_type)
+    consumes. The API owns the per-(dyad, decision_type)
     counter, so agent_decision_index is derived from decision_idx rather than
     sent by the host. Bookkeeping (day/week/slot) is always carried for the
-    /update timeline reward derivation (§5.3); the feature builder ignores
+    /update timeline reward derivation; the feature builder ignores
     keys it does not list.
     """
     agent_decision_index = int(decision_idx) + 1
@@ -310,7 +310,7 @@ def outcome_from_snapshot(
 ) -> dict[str, Any]:
     """
     Read the outcome fields the reward depends on from a later snapshot on the
-    timeline (API-Spec §5.3). Mapped to the OUTCOME_SCHEMAS keys that
+    timeline. Mapped to the OUTCOME_SCHEMAS keys that
     `compute_reward` expects.
     """
     if decision_type == "aya_message":

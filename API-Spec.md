@@ -3,18 +3,14 @@
 The contract from the host's perspective:
 
 1. **`/upload_data` is a flat "latest values" snapshot.** No context/outcome
-   distinction; the host sends the latest value of every variable in §5.1. No
-   `decision_type` or `decision_idx`. See §3.3 and §5.
+   distinction; the host sends the latest value of every variable in §4.1. No
+   `decision_type` or `decision_idx`. See §2.3 and §4.
 2. **`/action` is context-free.** The API reads the dyad's most recent
    uploaded snapshot and projects out the subset the requested `decision_type`
-   needs. See §3.2.
+   needs. See §2.2.
 3. **`/update` issues no callback.** The monitoring algorithm schedules updates
    and watches for completion via the `model_update_requests` table; the API
-   does not POST back. See §3.4.
-4. **Reward derivation is server-side, at `/update` time.** Each action is
-   paired with subsequent `data_uploads` rows on the timeline; the scalar
-   reward is computed there. The host never sends rewards or outcomes
-   explicitly. See §5.3 and §6.3.
+   does not POST back. See §2.4.
 
 
 ---
@@ -31,9 +27,9 @@ the monitoring algorithm.
 
 ---
 
-## 3. Endpoints
+## 2. Endpoints
 
-### 3.1 `POST /api/v1/register_group` — register a dyad
+### 2.1 `POST /api/v1/register_group` — register a dyad
 
 Registers a dyad (a group of two participants) at recruitment.
 
@@ -43,7 +39,7 @@ Request:
 |---|---|---|
 | `group_id` | string | unique dyad identifier |
 | `member_list` | list | participant identifiers, e.g. `[cp_id, aya_id]` |
-| `consent_start_date` | `YYYY-MM-DD` | onboarding/consent complete |
+| `consent_start_date` | `YYYY-MM-DD` | onboarding/consent complete; must be a **Monday** — it starts the study clock (`day_in_study = 1`) |
 | `consent_end_date` | `YYYY-MM-DD` | active window end (≈ start + 100 days) |
 
 
@@ -53,8 +49,8 @@ Request body (example):
 {
   "group_id": "dyad_007",
   "member_list": ["cp_007", "aya_007"],
-  "consent_start_date": "2026-05-27",
-  "consent_end_date": "2026-09-04"
+  "consent_start_date": "2026-05-25",
+  "consent_end_date": "2026-09-02"
 }
 ```
 
@@ -81,37 +77,26 @@ request body and returns `201` with `message: "Group consent window updated."`
 the members recorded at first registration stand. Re-registration is therefore
 the supported mechanism for correcting a dyad's active window.
 
-`400` — a required field is missing or malformed. An existing `group_id` is
-**not** a `400`; it is the upsert described above.
+**Error responses.** Registration is one-time and off the real-time decision
+path; the guiding principle is "never lose a recruitable dyad."
 
-There is **no** `REGISTERED → STARTED → COMPLETED` status machine in the current
-service, and no persisted per-dyad lifecycle flags. A status lifecycle could be
-added if the host needs it.
+- `400` — a required field is missing or malformed. No partial row is
+  written; correct and re-submit. (An existing `group_id` is **not** a `400`;
+  it is the consent-window upsert described above.)
+- `500` / `503` — database write failure. Safe to retry with backoff: the
+  request writes exactly one row and has no other side effects. Registration
+  may run any time before the dyad's first decision (§3), so a transient
+  outage never affects an in-flight intervention.
 
-**Server-side fallback (`/register_group`).** Registration is one-time and off the
-real-time decision path, so the fallback principle is "never lose a recruitable
-dyad," not "serve a default."
+### 2.2 `POST /api/v1/action` — request an action
 
-- *Duplicate `group_id`* — handled as an idempotent **upsert** of the consent
-  window (implemented, see above), not a hard `400`. Re-registration
-  with corrected dates is a normal path, not an error.
-- *Missing / invalid required field* — reject `400` and surface to the host;
-  this is operator error at recruitment (human-in-the-loop). No partial `groups`
-  row is written, so a corrected re-submit is clean.
-- *DB write failure* (`500`/`503`) — the request writes exactly one `groups`
-  row and has no other side effects, so it is safe to retry with backoff.
-  Because `/register_group` may run any time before the dyad's first decision (§4), a
-  transient outage here never affects an in-flight intervention.
-
-### 3.2 `POST /api/v1/action` — request an action
-
-Called by the host shortly before each decision window for a dyad (see §4).
+Called by the host shortly before each decision window for a dyad (see §3).
 
 **Context is not sent on `/action`.** The host calls
 `/upload_data` before each `/action` (and may call it any number of times in
 between). At action time the API reads the dyad's most recent uploaded values
 from the `data_uploads` log and projects out the subset of fields the
-requested `decision_type` needs (§5.2). The host does not tell the API which
+requested `decision_type` needs. The host does not tell the API which
 fields are "context" — the learner decides per decision type.
 
 Request:
@@ -128,8 +113,8 @@ Request body (example):
 ```json
 {
   "group_id": "dyad_007",
-  "timestamp": "2026-05-27T09:00:00",
-  "decision_idx": 12,
+  "timestamp": "2026-06-10T07:30:00",
+  "decision_idx": 29,
   "decision_type": "aya_message"
 }
 ```
@@ -144,10 +129,8 @@ Response `201`:
   "action": 1,
   "action_prob": 0.65,
   "rid": "a1b2c3d4",
-  "timestamp": "2026-05-27T09:00:01",
-  "warmup": false,
-  "warmup_reason": null,
-  "state": [1.0, 1.0, 0.0, 0.6, 0.4, 0.7, 0.8, 3.0, 1.5, 0.14, 1.0]
+  "timestamp": "2026-06-10T07:30:01",
+  "warmup": false
 }
 ```
 
@@ -157,73 +140,38 @@ Response `201`:
   is always `0.5`.
 - `rid` — unique id for this action; the host should retain it for reference.
 - `warmup` — `true` if this decision was a pure `Bernoulli(0.5)` draw (the learner was
-  bypassed); `false` if the learner produced it. `warmup_reason` ∈ {`"cohort"`, `"week1"`,
-  `null`} records *why* (§3.2 warm-up). The host does not need to act on these,
-  but they are surfaced for logging/diagnostics.
-- `state` — the feature vector the learner used (`null` on warm-up decisions, which bypass the
-  feature builder). **Currently returned, but redundant: the API persists it in its own
-  `actions` table. [planned: remove from the response; the host does not need it.]** The
-  earlier draft's `seed` field is **not** returned (the RNG state is internal).
-
-**Warm-up.** Early in the study some decisions are returned as pure
-`Bernoulli(0.5)` draws ("warm-up") to seed the learner. **This is decided
-entirely by the API; the host does nothing differently.** When a decision is a
-warm-up draw the response carries `warmup = true` and `action_prob = 0.5`
-(and `state` is `null`); otherwise `warmup = false`. The host still calls
-`/upload_data` before the `/action` as usual (the `409` guard applies to
-warm-up decisions too). The host cannot force or suppress warm-up, and the
-selection rule is an internal API concern — not part of the host contract.
-
+  bypassed); `false` if the learner produced it. Warm-up is managed entirely by the
+  API — the host does not need to act on this flag; it is surfaced for logging only.
 **Idempotency key:** `(group_id, decision_type, decision_idx)`. Each of the three agents
 (`aya_message`, `cp_message`, `dyad_game`) has its own per-dyad counter, so the same
 `decision_idx` value can legitimately appear once per `decision_type` for the same dyad.
 
-Error responses: `404` group not found / no model parameters; `400` `decision_idx` already
-exists for this `(group_id, decision_type)` (idempotent — a repeated triple is rejected, so
-the host can safely retry); `409` no `/upload_data` has ever been received for this
-`group_id` (the API has no values to construct a state); `500` internal error.
+**Error responses.** `/action` is the only hard-real-time endpoint — the host
+is about to act — so a decision must never be lost to an error. Whenever the
+host cannot get a usable response at decision time, the recommended local
+fallback is always the same: **draw `Bernoulli(0.5)` yourself and record
+`action_prob = 0.5`**.
 
-The API may relax the `409` to a `200` with a fully-masked
-state (all variables treated as missing) once the missing-indicator behavior
-has been validated end-to-end. See §9.
+- `400` — duplicate `(group_id, decision_type, decision_idx)`. The triple is
+  the idempotency key: a repeat is rejected outright, so a duplicate
+  submission never mints a second action.
+- `400` — malformed request envelope (missing or type-invalid field).
+  Correct and re-send.
+- `404` — `group_id` not registered, or model parameters not initialized.
+  Apply the local fallback for this decision and fix the registration /
+  deployment before the next one.
+- `409` — no `/upload_data` has ever been received for this dyad, so the API
+  has no values to construct a state. Send the first snapshot before the
+  first `/action`; if a decision is due right now, apply the local fallback.
+- `500` — internal error, including a failure inside the learner. Apply the
+  local fallback. **[planned — tracked in `IMPLEMENTATION_TODO.md`: the API
+  will instead return `200` with a randomized `action` and
+  `action_prob = 0.5`, so the host proceeds as with any normal response.]**
 
-**Server-side fallback (`/action`).** `/action` is the only hard-real-time
-endpoint — the host is about to act — so the API must always hand back a usable
-`(action, action_prob)` rather than an error the host cannot recover from. This
-implements fallback **F-A2** ("API reachable but cannot compute a valid π") from
-`Algorithm-Monitoring.md` §2. The contract: `/action` never 5xx-es out without
-leaving the host a safe action; when the learned policy is unreachable it
-degrades to randomization, never to "no decision."
-
-- *Learner / feature failure* — corrupted or non-PSD posterior, feature-builder
-  exception, missing week-1 standardization baseline (monitoring B5), sampler
-  error, or `model_parameters` not yet written (cold-start race that would
-  otherwise surface as `404`/`500`): the API returns `200` with
-  `action = Bernoulli(0.5)`, `action_prob = 0.5`, persists the `actions` row
-  with `is_warmup = true` and `warmup_reason = "fallback"`, and sets a
-  `fallback_flag` in the response. The row is also marked
-  `excluded_from_update = TRUE` (planned column, §9) so a degenerate fit does
-  not poison the next `/update` pool.
-- *No upload history* (`409`): once the masked-state behavior is validated (§9),
-  serve a fully-masked `Bernoulli(0.5)` decision instead of `409`. Until then
-  `409` stands and the host applies its own local **F-A1**
-  (`Bernoulli(0.5)`, `π = 0.5`).
-- *Duplicate `(group_id, decision_type, decision_idx)`* (`400`): the triple is
-  the idempotency key, so on a repeat the API returns the **already-stored**
-  `(action, action_prob, rid)` for that triple rather than re-sampling — a host
-  retry is deterministic and consumes no new buffer primitives.
-- *Genuine `404`* (unregistered `group_id`): a true host error; return `404` and
-  alert. The host falls back to **F-A1** locally.
-- *Determinism preserved*: every fallback draw is still pulled from the
-  deterministic sample buffer and its cursor stamped on the `actions` row, so a
-  fallback decision remains bit-for-bit replayable (the C5 audit). If the buffer
-  itself is unavailable, the API serves `0.5`, flags the row, and raises a red
-  infrastructure alert (monitoring E1).
-
-### 3.3 `POST /api/v1/upload_data` — provide a full snapshot of dyad data
+### 2.3 `POST /api/v1/upload_data` — provide a full snapshot of dyad data
 
 The host posts a **full snapshot** of every variable listed
-in §5.1. There is **no** context/outcome distinction — the host does not need
+in §4.1. There is **no** context/outcome distinction — the host does not need
 to know which variables the learner uses as context and which as outcome.
 There is also **no** `decision_type` or `decision_idx` — each upload is a
 flat "current state of the dyad" snapshot, not tied to a particular decision.
@@ -232,23 +180,22 @@ flat "current state of the dyad" snapshot, not tied to a particular decision.
 every `/action`** — exactly one upload per `/action` call, in the same
 sequence the decisions are delivered.
 
-- **Monday morning** (3 uploads, run sequentially):
-1. pre-`dyad_game` upload → `POST /action dyad_game` returns the week's
-   game action $a^{(g)}$;
-2. pre-AYA-AM upload → `POST /action aya_message`;
-3. pre-CP upload → `POST /action cp_message`.
-   - **Tuesday–Saturday morning** (2 uploads, run sequentially):
-     pre-AYA-AM upload → `POST /action aya_message`;
-     pre-CP upload → `POST /action cp_message`.
-   - **Every evening except Sunday** (1 upload):
-     pre-AYA-PM upload → `POST /action aya_message`.
+- **Monday morning** (3 uploads, run sequentially): pre-`dyad_game` upload →
+  `POST /action dyad_game` (returns the week's game action $a^{(g)}$); then
+  pre-AYA-AM upload → `POST /action aya_message`; then pre-CP upload →
+  `POST /action cp_message`.
+- **Tuesday–Saturday morning** (2 uploads, run sequentially): pre-AYA-AM
+  upload → `POST /action aya_message`; then pre-CP upload →
+  `POST /action cp_message`.
+- **Every evening except Sunday** (1 upload): pre-AYA-PM upload →
+  `POST /action aya_message`.
 
-§5.1 specifies, for each variable, what value to send at each upload. For
+§4.1 specifies, for each variable, what value to send at each upload. For
 most variables the value is identical across the uploads of a single
 morning (the host's measurements don't change in minutes); the exceptions
 are `current_game_on` and `prior_game_action`, whose values depend on
-whether the Monday-morning `dyad_game` /action has happened yet (see §5.1).
-For brevity §5.1 refers to "AM upload value" (= the value at any morning
+whether the Monday-morning `dyad_game` /action has happened yet (see §4.1).
+For brevity §4.1 refers to "AM upload value" (= the value at any morning
 upload, with Monday-morning exceptions noted) and "PM upload value".
 
 Request:
@@ -257,17 +204,17 @@ Request:
 |---|---|---|
 | `group_id` | string | must be a registered dyad |
 | `timestamp` | ISO-8601 | wall-clock time of this snapshot |
-| `data` | object | flat dict; every key listed in §5.1 must be present. Use the literal `"miss"` (or JSON `null`) to mark an unobservable value. |
+| `data` | object | flat dict; every key listed in §4.1 must be present. Use the literal `"miss"` (or JSON `null`) to mark an unobservable value. |
 
-Request body (example — a full snapshot before an AYA AM decision):
+Request body (example — the pre-AYA-AM snapshot on Wednesday of study week 3):
 
 ```json
 {
   "group_id": "dyad_007",
-  "timestamp": "2026-05-27T08:00:00",
+  "timestamp": "2026-06-10T07:25:00",
   "data": {
-    "day_in_study": 7,
-    "week_in_study": 1,
+    "day_in_study": 17,
+    "week_in_study": 3,
     "slot": "am",
     "aya_diary_mood": 0.6,
     "aya_diary_physical": 0.4,
@@ -295,7 +242,7 @@ Request body (example — a full snapshot before an AYA AM decision):
 ```
 
 **Semantics:**
-- Every upload is a **full snapshot** — every field in §5.1 must be present.
+- Every upload is a **full snapshot** — every field in §4.1 must be present.
   A field whose underlying measurement is unavailable for this upload must
   be sent as `"miss"` (or JSON `null`); it cannot simply be omitted.
 - The learner masks `"miss"` values via the shared missing-indicator
@@ -303,47 +250,32 @@ Request body (example — a full snapshot before an AYA AM decision):
 - The host does not tag uploads as "this is for AYA" / "this is the outcome
   of decision 12". The learner handles all such matching server-side at
   `/action` time (latest-snapshot lookup) and `/update` time (timeline-based
-  reward derivation, §5.3).
-- The earlier `data.context` / `data.outcome` / `data.action` /
-  `data.action_prob` / `data.state` envelope is **gone**. `data` is a flat
-  dict.
+  reward derivation).
 
-Responses: `201` success; `404` group not found; `400` missing key, unknown
-key, or type-invalid value (see §5.1 for the accepted set); `500` internal
-error.
+**Responses.** `201` on success. Uploads are the sole inputs to reward
+derivation, so no posted data should ever be silently lost — on any error,
+correct and re-send.
 
-**Server-side fallback (`/upload_data`).** Uploads are off the decision path,
-but they are the sole inputs to reward derivation (§5.3), so the fallback
-principle is "preserve every byte, never silently drop." This implements
-fallback **F-U1** from `Algorithm-Monitoring.md` §2.
+- `400` — missing key, unknown key, or type-invalid value (see §4.1 for the
+  accepted set). The snapshot is all-or-nothing: a field with no measurement
+  must be sent explicitly as `"miss"`. Correct and re-send.
+  **[planned — tracked in `IMPLEMENTATION_TODO.md`: rejected payloads will
+  additionally be preserved verbatim for post-trial analysis.]**
+- `404` — unknown `group_id`. Register the dyad, then re-send the upload.
+- `500` / `503` — database write failure. Safe to retry: uploads are
+  append-only, and a duplicate row is harmless (the latest-value lookup is
+  unchanged).
 
-- *Malformed / schema-invalid / unknown-key / type-invalid payload* (`400`): the
-  API still persists a `data_uploads` row with the raw payload captured verbatim
-  and `excluded_from_update = TRUE` (planned column, §9), then returns `4xx`. The
-  row is preserved for post-trial analysis but never enters the fit. Monitoring
-  B1 (failed upload) and B7 (semantic support violation) fire.
-- *Missing key in the full snapshot*: the lenient default is to **accept** the
-  upload and fill the absent field with `"miss"` server-side (the learner masks
-  it anyway), logged at green severity; the strict default is `400` + F-U1.
-  Which to adopt is a §9 open item — but under either choice the upload is never
-  discarded.
-- *Unknown `group_id`* (`404`): return `404` and alert; optionally buffer the
-  payload pending registration. No partial state is written.
-- *DB write failure* (`500`/`503`): `/upload_data` is append-only with no
-  idempotency key, so the host may safely retry; a duplicate row is harmless
-  (the latest-value lookup is unchanged).
-
-### 3.4 `POST /api/v1/update` — re-fit the model
+### 2.4 `POST /api/v1/update` — re-fit the model
 
 Asynchronous. The **monitoring algorithm** (a separate component, see
 `Monitoring_Algorithm/`) is responsible for triggering this on its own
-schedule (production target: weekly, Monday 3 AM, §4) and for watching for
+schedule (production target: weekly, Monday 3 AM, §3) and for watching for
 completion. The API fits in a background thread.
 
-**No callback.** The earlier callback-on-completion mechanism
-is gone. Completion is observed by reading the `model_update_requests` table
-(or via a `GET /api/v1/update/<update_id>` endpoint — see §9). The API does
-not POST anywhere on completion.
+**No callback.** The monitoring algorithm observes completion by reading the
+`model_update_requests` table directly. The API does not POST anywhere on
+completion.
 
 Request:
 
@@ -372,50 +304,17 @@ Behavior:
 - Optionally backs up all tables to a timestamped zip before fitting (`BACKUP_DATABASE`).
 - Writes a pre-update reproducibility snapshot (copy of `data_uploads`, `actions`, `groups`).
 - For every `actions` row not yet paired, walks forward on the `data_uploads`
-  timeline to derive that decision's outcome (per §5.3) and writes a
+  timeline to derive that decision's outcome and writes a
   `study_data` row.
 - Re-fits the learner over all `study_data` and writes new `ModelParameters`.
 - On completion, sets `model_update_requests.status` to `completed` (and
   stamps `completed_at`) or `failed` (and stamps `error_message`).
 
-The earlier draft's split into daily `/update_parameters` + weekly `/update_hyperparameters`
-is **not** implemented; there is a single `/update`. The monitoring algorithm should re-ping
-if a scheduled update is missed.
 
-**Server-side fallback (`/update`).** `/update` is asynchronous and off the
-decision path, so the fallback principle is "never publish a bad policy; keep
-serving the last good one." This implements fallbacks **F-U2** and **F-U3** from
-`Algorithm-Monitoring.md` §2. A pre-update reproducibility snapshot (and optional
-backup) is written **before** fitting, so a failed update never corrupts the
-prior good state.
-
-- *Fit fails the C3 posterior-sanity gate* (NaN/∞, non-PSD covariance, or trace
-  blow-up): the new `model_parameters` row is **not** published; the previous
-  parameters stay in force, so `/action` keeps serving the last good policy. The
-  `model_update_requests` row is marked `status = "failed"` with the reason in
-  `error_message` (**F-U2**). The C3 gate runs *before* publication precisely so a
-  degenerate fit can never reach a decision.
-- *Empty batch* (no new `study_data` since the last successful update): skip the
-  fit, keep previous parameters, mark the request `completed`, and log green
-  (**F-U3**) so the data analyst can tell a deliberate skip from a stalled learner.
-- *Per-action reward-derivation error*: skip the offending `actions` row (leave
-  its `study_data.reward` `NULL` for a later re-run), derive the rest, and
-  continue — one bad outcome window does not fail the whole update. Monitoring B2
-  tracks the resulting NULL-reward rate.
-- *Background-thread crash / timeout*: the updater sets `status = "failed"` on any
-  unhandled exception; if it dies before that, the row stays `processing` and
-  monitoring C1 fires after 30 min and re-pings. Either way the previous
-  `model_parameters` remain active, and the host keeps fetching actions under the
-  last good policy.
-
-### 3.5 Monitoring (auxiliary)
-
-A monitoring blueprint is mounted at `/api/v1/monitor` (health/diagnostics per the
-`Monitoring_Algorithm` package). Not required for the core decision loop.
 
 ---
 
-## 4. Endpoint calling flow (worked example)
+## 3. Endpoint calling flow (worked example)
 
 This section walks through a complete week of API calls for one active
 dyad, using concrete clock times. It expands on
@@ -447,7 +346,7 @@ overlapping active windows).
 
 **Weekly cron — Monday 03:00.** Monitoring algorithm POSTs `/update`. The
 fit runs in a background thread; the monitoring algorithm watches
-`model_update_requests` for completion (§3.4). Must finish before 06:00,
+`model_update_requests` for completion (§2.4). Must finish before 06:00,
 when the first `/action` of the week is requested.
 
 **Weekly cron — Monday 06:00** (`dyad_game` decision; once per week).
@@ -459,7 +358,7 @@ when the first `/action` of the week is requested.
    - bookkeeping (`day_in_study`, `week_in_study`), all dyad-level
      weekly aggregates (`*_diary_summary`, `relationship_quality_*`,
      `weekly_survey_completed`, `weekly_relationship_score`), all
-     AYA/CP-side fields per §5.1
+     AYA/CP-side fields per §4.1
 2. **`POST /action`** with `decision_type = "dyad_game"`, `decision_idx =
    w`. API returns $a^{(g)}_w \in \{0, 1\}$. Host writes $a^{(g)}_w$ into
    its delivery log; this becomes `current_game_on` for every subsequent
@@ -482,7 +381,7 @@ when the first `/action` of the week is requested.
      indexes yesterday's AYA-PM decision
    - `cp_app_burden` = $\gamma_C \, b_{m-1} + a_{m-1}$ where $m - 1$
      indexes yesterday's CP decision
-   - all remaining fields per §5.1
+   - all remaining fields per §4.1
 2. **`POST /action`** with `decision_type = "aya_message"`, `decision_idx`
    = host's per-dyad AYA-decision counter. API returns $a_k \in \{0, 1\}$.
    If $a_k = 1$, host queues the AYA-AM supportive message for delivery
@@ -523,7 +422,7 @@ the AYA-AM and CP messages (success / fail) for later use in
    - `cp_app_burden` = $\gamma_C \, b_m + a_m$ where $m$ indexes this
      morning's CP decision
    - `current_game_on` = $a^{(g)}_w$ (unchanged from this morning)
-   - all remaining fields per §5.1
+   - all remaining fields per §4.1
 2. **`POST /action`** with `decision_type = "aya_message"`,
    `decision_idx` = host's AYA counter. API returns $a_{k+1}$. Host
    queues the AYA-PM message if $a_{k+1} = 1$.
@@ -547,25 +446,18 @@ study window. At every field that summarizes prior history
 sent as `0.0`. `current_game_on` is `"miss"` until the Monday 06:00
 `dyad_game` /action returns. `prompted_by_message` is `false`.
 
-Conflicts with `ADAPTS-HCT-Interaction-Flow.md`. The older
-doc places the weekly `/update` and `dyad_game` calls on **Sunday**
-morning rather than Monday; it also does not describe the per-day AYA-AM
-/ CP / AYA-PM cadence. The schedule above (Mon 03:00 update, Mon 06:00
-`dyad_game`, daily AYA-AM + CP + AYA-PM Mon–Sat) supersedes it. See §9
-for an open item on reconciling the two.
-
 ---
 
-## 5. Data field dictionary
+## 4. Data field dictionary
 
-`/upload_data` carries a **full snapshot** of every variable listed in §5.1.
+`/upload_data` carries a **full snapshot** of every variable listed in §4.1.
 The host does not need to know which variables the learner uses as context
 vs. outcome — it simply sends the latest measured value of each at every
-upload. The learner consults a fixed subset of these fields at `/action`
-time (§5.2) and at `/update` time (§5.3).
+upload. The learner consults a fixed subset of these fields at `/action` and
+`/update` time; which subset is internal to the API.
 
 **Upload events.** The host calls `/upload_data` **once before every
-`/action` call** (see §3.3 for the per-day schedule). The number of
+`/action` call** (see §2.3 for the per-day schedule). The number of
 uploads per day is:
 
 - **Monday:** 4 uploads — pre-`dyad_game`, pre-AYA-AM, pre-CP, pre-AYA-PM
@@ -579,10 +471,9 @@ typically carry the same value for a given field; exceptions for
 `current_game_on` and `prior_game_action` are called out explicitly).
 "PM upload value" means the value at the pre-AYA-PM upload.
 
-For variables measured on a weekly cadence (relationship-quality survey)
-or computed once per week (app-engagement bucket), the host caches the
-most recent value and re-sends it on every upload until the next
-recomputation. For the dose-trace burdens (`aya_app_burden`,
+For variables measured on a weekly cadence (relationship-quality survey),
+the host caches the most recent value and re-sends it on every upload until
+the next administration. For the dose-trace burdens (`aya_app_burden`,
 `cp_app_burden`), the host advances the recurrence at the action delivery
 that follows each /action.
 
@@ -594,6 +485,8 @@ Field-type encodings:
 - `nonneg_float` ≥ 0
 - `float_or_miss` — real number or `"miss"`
 - `engagement` ∈ {1, 2, 3, 4} — ordinal app-engagement bucket
+- `engagement_or_miss` ∈ {1, 2, 3, 4, "miss"}
+- `unit_interval_or_miss` — [0, 1] or `"miss"`
 - `slot` ∈ {"am", "pm"}
 - `positive_int` ≥ 1
 
@@ -601,7 +494,7 @@ Any field whose value is unavailable for this upload must be sent as the
 literal `"miss"` (or JSON `null`); the learner masks `"miss"` values via the
 shared missing-indicator mechanism.
 
-### 5.1 Field dictionary
+### 4.1 Field dictionary
 
 Every variable below must be present in every `/upload_data` (full
 snapshot). For each variable, "AM value" and "PM value" specify what the
@@ -612,7 +505,7 @@ stated.
 #### Bookkeeping
 
 **`day_in_study`** — `positive_int`. 1-indexed day since the dyad's
-`consent_start_date`.
+`consent_start_date` (day 1 = the consent-start Monday).
 - *AM/PM value:* `day = (current_date - consent_start_date).days + 1`.
   Identical at AM and PM on the same calendar day.
 - *Missingness:* never missing (always computable).
@@ -620,6 +513,9 @@ stated.
 **`week_in_study`** — `positive_int`. 1-indexed week since
 `consent_start_date`.
 - *AM/PM value:* `week = floor((day_in_study - 1) / 7) + 1`.
+- *Alignment:* `consent_start_date` is a Monday (§2.1), so study weeks run
+  Monday–Sunday and `week_in_study` increments on Mondays, in step with the
+  weekly `dyad_game` cadence (§3).
 - *Missingness:* never missing.
 
 **`slot`** — `slot`.
@@ -647,15 +543,27 @@ schedule (once per day, evening MTW only) and upload-timing rules as
 `aya_diary_mood` — both AM and PM uploads carry yesterday's response.
 - *Missingness:* `"miss"` if not submitted yesterday.
 
-**`aya_app_engagement`** — `engagement` ∈ {1, 2, 3, 4}. Most recent weekly
-engagement bucket for the AYA, computed by the host.
-- *Measurement schedule:* recomputed once per week (e.g. each Monday) over
-  the previous 7 days of app sessions. Between recomputations the host
-  caches the bucket and re-sends it on every upload.
-- *AM/PM value:* the most recent computed bucket. Identical across all
-  uploads within a week.
-- *Missingness:* `"miss"` only in week 1 if no sessions have occurred yet;
-  the host's engagement spec is authoritative for the bucket boundaries.
+**`aya_app_engagement`** — `engagement_or_miss`. Ordinal app-engagement
+level for the AYA, computed by the host from its own app-open and
+diary-completion analytics.
+- *Measurement schedule:* recomputed at **every upload** from app-open and
+  diary-completion analytics for calendar days $d-3$, $d-2$, $d-1$ relative
+  to the upload's decision date $d$. There is no weekly caching.
+- *Bucket rules:*
+  - `1` — no app open on any of $d-1$, $d-2$, $d-3$.
+  - `2` — no open on $d-1$, but at least one open on $d-2$ or $d-3$.
+  - `3` — at least one open on $d-1$, but the daily diary for $d-1$ was
+    **not** completed.
+  - `4` — at least one open on $d-1$ and the daily diary for $d-1$ was
+    completed.
+- *AM/PM value:* both uploads on day $d$ use the same window
+  $\{d-3, d-2, d-1\}$, so AM and PM values agree unless the $d-1$ diary
+  record changes between uploads.
+- *Missingness:* normally never `"miss"` — diary non-completion is already
+  encoded in the 3-vs-4 split, and a participant who never opens the app is
+  level 1, not missing. Send `"miss"` only for an operational analytics gap
+  (e.g. the first uploads of the study, before analytics are computed); the
+  learner substitutes level 1.
 
 **`aya_app_burden`** — `nonneg_float`. Discount-weighted cumulative
 "dose trace" of past AYA-message actions. **Not a survey** — computed by
@@ -732,7 +640,7 @@ physical-symptoms question, unlike the AYA diary).
   daily, not per-MTW), so PM uploads re-send the same value.
 - *Missingness:* `"miss"` if the CP did not submit yesterday's diary.
 
-**`cp_app_engagement`** — `engagement`. Same definition, measurement
+**`cp_app_engagement`** — `engagement_or_miss`. Same definition, measurement
 schedule, upload-timing rules, and missingness policy as
 `aya_app_engagement`, for the CP.
 
@@ -779,7 +687,7 @@ this equals `cp_diary_mood` whenever it is non-missing.
 - *AM/PM value:* `cp_diary_mood` if `daily_diary_completed = true`,
   else `0.0`.
 - *Missingness:* if `daily_diary_completed = false`, send `0.0` (the
-  learner ignores it via §5.3).
+  learner ignores it).
 
 #### Dyad-level
 
@@ -805,12 +713,12 @@ the current week — i.e. the action returned by the most recent
   yet been decided** at this upload, and the previous week's action is
   captured separately by `prior_game_action` — so `current_game_on` is
   not yet meaningful. The `dyad_game` learner does not read
-  `current_game_on` (see §5.2), so this `"miss"` does not affect the
+  `current_game_on`, so this `"miss"` does not affect the
   decision.
 - *Pre-AYA-AM upload (Monday morning, after the `dyad_game` /action):*
   equals the action $a^{(g)} \in \{0, 1\}$ just returned by the
   `dyad_game` /action. The `aya_message` and `cp_message` learners read
-  this value as a state feature for that morning's decisions (§5.2).
+  this value as a state feature for that morning's decisions.
 - *Pre-CP upload (Monday morning):* same as the pre-AYA-AM upload value.
 - *Pre-AYA-PM upload (Monday evening) and every upload Tue–Sat:* equals
   Monday's $a^{(g)}$, carried forward unchanged through the week.
@@ -820,7 +728,7 @@ the current week — i.e. the action returned by the most recent
 
 **`prior_game_action`** — `binary_or_miss`. The action chosen at the
 **most-recently-completed** `dyad_game` decision — the feature read by
-the `dyad_game` learner at this Monday's decision (§5.2).
+the `dyad_game` learner at this Monday's decision.
 - *Pre-`dyad_game` upload (Monday morning of week $w \geq 2$):* equals
   the action returned by week $w - 1$'s `dyad_game` /action.
 - *All subsequent uploads in week $w$ (pre-AYA-AM, pre-CP, pre-AYA-PM,
@@ -831,7 +739,7 @@ the `dyad_game` learner at this Monday's decision (§5.2).
 - *Missingness:* `"miss"` in study week 1 (no previous week's `dyad_game`
   decision exists).
 
-**`aya_diary_summary`** — `unit_interval`. Weekly aggregate of the AYA's
+**`aya_diary_summary`** — `unit_interval_or_miss`. Weekly aggregate of the AYA's
 daily evening-MTW mood-diary entries.
 - *Formula:* the AYA submits at most one diary per day (at the evening
   MTW), so the past 7 days yield at most 7 entries. Let $S$ be the subset
@@ -846,10 +754,9 @@ daily evening-MTW mood-diary entries.
   AM and PM values on the same day are identical (no new diary arrives
   between AM and PM uploads).
 - *Missingness:* if $|S| = 0$ (no mood entries in the past 7 days), send
-  `"miss"`. (See §9 for an open decision on whether to use a neutral
-  default like `0.5` instead.)
+  `"miss"`.
 
-**`cp_diary_summary`** — `unit_interval`. Weekly aggregate of the CP's
+**`cp_diary_summary`** — `unit_interval_or_miss`. Weekly aggregate of the CP's
 daily mood-diary entries.
 - *Formula:* let $S$ be the set of CP daily-diary submissions in the past
   7 days with a non-missing `cp_diary_mood`, and let $\widetilde{m}_d \in
@@ -858,8 +765,7 @@ daily mood-diary entries.
   \text{cp\_diary\_summary} = \frac{1}{|S|}\sum_{d \in S} \widetilde{m}_d.
   $$
 - *AM/PM value:* recomputed at upload time.
-- *Missingness:* if $|S| = 0$, send `"miss"`. (Same open decision as
-  `aya_diary_summary`.)
+- *Missingness:* if $|S| = 0$, send `"miss"`.
 
 **`weekly_survey_completed`** — `bool`. Whether the dyad completed the
 most recent weekly relationship survey.
@@ -880,79 +786,20 @@ relationship score, used as the basis for the `dyad_game` reward.
 - *AM/PM value:* recomputed at upload time. Identical across uploads
   within a week unless a partial survey arrives mid-week.
 - *Missingness:* `0.0` whenever `weekly_survey_completed = false` (the
-  learner ignores it via §5.3).
-
-Differences from the earlier draft: app engagement is an
-ordinal 1–4 (not levels 0/1/2); there is **no** Fitbit sleep-quality
-variable and **no** 48 h notification-dose count (subsumed by app-burden);
-affect / relationship enter as the per-role diary fields (`*_diary_mood`,
-`aya_diary_physical`) and `relationship_quality_*` rather than the older
-"indicator × strength" composites; `aya_diary` and `cp_diary` are now flat
-top-level variables (`aya_diary_mood`, `aya_diary_physical`,
-`cp_diary_mood`) rather than nested objects; `med_adherence` has been
-renamed to `previous_med_adherence` to reflect that the value at upload time
-is the adherence at the just-elapsed MTW.
-
-### 5.2 Which fields the learner reads, by decision type
-
-When `/action` fires with a given `decision_type`, the learner reads the
-following subset of the latest snapshot. The host always sends every field
-(full snapshot); if a relevant field is `"miss"` the learner masks it.
-
-**`aya_message`** — `slot`, `previous_med_adherence`, `aya_diary_mood`,
-`aya_diary_physical`, `relationship_quality_aya`,
-`relationship_quality_cp`, `aya_app_engagement`, `aya_app_burden`,
-`aya_missing_rate_7d`, `current_game_on`, plus bookkeeping (`day_in_study`,
-`week_in_study`).
-
-**`cp_message`** — `cp_diary_mood`, `relationship_quality_aya`,
-`relationship_quality_cp`, `cp_app_engagement`, `cp_app_burden`,
-`cp_missing_rate_7d`, `current_game_on`, plus bookkeeping (`day_in_study`,
-`week_in_study`).
-
-**`dyad_game`** — `relationship_quality_aya`, `relationship_quality_cp`,
-`aya_app_engagement`, `cp_app_engagement`, `aya_app_burden`,
-`cp_app_burden`, `prior_game_action`, `aya_diary_summary`,
-`cp_diary_summary`, plus bookkeeping (`week_in_study`).
-
-### 5.3 Reward — derived server-side at `/update` time
-
-Each action's reward is computed at `/update` time by walking
-forward from the action's timestamp on the `data_uploads` timeline and
-reading the relevant outcome value from the **next** scheduled upload of
-the matching kind. The outcome window boundaries are spec-only at this
-point and will be finalized during the implementation diff (§9):
-
-- **`aya_message`** — outcome window = the next AYA upload following the
-  decision (AM decision → next PM upload; PM decision → next AM upload),
-  so ≈12 h. The 4-tier ordinal reward is computed from that upload's
-  `previous_med_adherence` (which by §5.1 is the adherence at the
-  just-elapsed MTW) and `prompted_by_message`:
-  - `0` if `previous_med_adherence == "miss"` (no usable report);
-  - `1` if `previous_med_adherence == 0` (reported non-adherent);
-  - `2` if `previous_med_adherence == 1` **and** (`prompted_by_message` is
-    `true` **or** the logged `action == 1`);
-  - `3` if `previous_med_adherence == 1` **and** `prompted_by_message` is
-    `false` **and** the logged `action == 0`.
-- **`cp_message`** — outcome window = the next CP-decision upload (next
-  AM, ≈24 h). Reward = `daily_diary_score` from that upload if
-  `daily_diary_completed == true`, else `0`.
-- **`dyad_game`** — outcome window = the next `dyad_game` upload (next
-  Monday AM, ≈7 days). Reward = `weekly_relationship_score` from that
-  upload if `weekly_survey_completed == true`, else `0`.
+  learner ignores it).
 
 ---
 
-## 6. Persisted data model (API-internal)
+## 5. Persisted data model (API-internal)
 
 Authoritative source: `app/models.py`. The host does not write these directly; all
-mutations happen through the four endpoints in §3. `flask export-csv` dumps every
+mutations happen through the four endpoints in §2. `flask export-csv` dumps every
 table to `exports/` for post-study analysis.
 
 Every table has a synthetic `id` integer primary key (autoincrement) which is omitted
 from the column listings below.
 
-### 6.1 `groups`
+### 5.1 `groups`
 
 One row per dyad. Written by `/register_group`.
 
@@ -962,7 +809,7 @@ One row per dyad. Written by `/register_group`.
 | `group_info` | JSON | `{member_list, consent_start_date, consent_end_date}` |
 | `created_at` | datetime | row creation timestamp |
 
-### 6.2 `actions`
+### 5.2 `actions`
 
 One row per `/action`. Records the realized decision and the random-state cursor used,
 so the action can be replayed deterministically.
@@ -973,11 +820,11 @@ so the action can be replayed deterministically.
 | `group_id` | string | FK-by-value to `groups.group_id` |
 | `decision_idx` | int | per-`(dyad, decision_type)` decision counter; component of the idempotency key |
 | `decision_type` | string | `aya_message` / `cp_message` / `dyad_game` |
-| `raw_context` | JSON | the per-agent context used at decision time — projected at action time from the dyad's latest values in `data_uploads` (§5.2). Recorded explicitly so the decision is reproducible even if later uploads overwrite individual fields. |
+| `raw_context` | JSON | the per-agent context used at decision time — projected at action time from the dyad's latest values in `data_uploads`. Recorded explicitly so the decision is reproducible even if later uploads overwrite individual fields. |
 | `state` | JSON | the feature vector `phi(s, a)` fed to the learner |
 | `action` | int | chosen action ∈ {0, 1} |
 | `action_prob` | float | Pr(chosen action), not Pr(action = 1); always `0.5` on warm-up rows |
-| `is_warmup` | bool | `true` if this decision was a `Bernoulli(0.5)` warm-up draw (learner bypassed), per §3.2 |
+| `is_warmup` | bool | `true` if this decision was a `Bernoulli(0.5)` warm-up draw (learner bypassed), per §2.2 |
 | `warmup_reason` | string (nullable) | `cohort` / `week1` on warm-up rows; `NULL` otherwise |
 | `random_state` | JSON | sample-buffer cursor positions for this draw (for replay) |
 | `model_parameters_id` | int (FK) | which `model_parameters` row was used |
@@ -986,28 +833,29 @@ so the action can be replayed deterministically.
 
 Unique constraint: `(group_id, decision_type, decision_idx)`.
 
-### 6.3 `data_uploads`
+### 5.3 `data_uploads`
 
 Append-only log of every `/upload_data` call. Each row is a
-**full snapshot** of every variable in §5.1 (`data.X` is always present,
+**full snapshot** of every variable in §4.1 (`data.X` is always present,
 possibly `"miss"`). The "current value of field X for dyad Y" is simply
 `data.X` from the most recent row for Y. The `/action` endpoint reads the
 latest row at decision time; `/update` walks the timeline to derive
-outcomes (§5.3).
+outcomes.
 
 | Column | Type | Notes |
 |---|---|---|
 | `group_id` | string | FK-by-value to `groups.group_id` |
-| `data` | JSON | the flat `data` dict as posted; every key in §5.1 is present |
+| `data` | JSON | the flat `data` dict as posted; every key in §4.1 is present |
 | `request_timestamp` | datetime | timestamp on the `/upload_data` request |
 | `created_at` | datetime | row creation timestamp |
 
-### 6.4 `study_data`
+### 5.4 `study_data`
 
 Now an **update-derived** table: one row per `(action, derived
 outcome)` pair, written during `/update`. The matching `actions` row is
 located by `(group_id, decision_type, decision_idx)`; the outcome fields are
-read from `data_uploads` per §5.3; the scalar reward is computed and stored.
+read from later `data_uploads` rows on the timeline; the scalar reward is
+computed and stored.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1018,8 +866,9 @@ read from `data_uploads` per §5.3; the scalar reward is computed and stored.
 | `action_prob` | float | echoed from the matching `actions` row |
 | `state` | JSON | feature vector at decision time (echoed from `actions.state`) |
 | `raw_context` | JSON | context at decision time (echoed from `actions.raw_context`) |
-| `outcome` | JSON | realized outcome fields read from later `data_uploads` rows per §5.3 |
-| `reward` | float | scalar reward computed from `outcome` per §5.3 |
+| `outcome` | JSON | realized outcome fields read from later `data_uploads` rows |
+| `reward` | float | scalar reward computed from `outcome` |
+| `request_timestamp` | datetime | echoed from the matching `actions` row |
 | `derived_at` | datetime | timestamp of the `/update` that produced this row |
 | `created_at` | datetime | row creation timestamp |
 
@@ -1028,11 +877,10 @@ idempotent across re-runs of `/update` — an existing row for a given
 `(group_id, decision_type, decision_idx)` is updated in place if its
 `outcome` window has subsequently filled in (e.g. a late upload arrived).
 
-### 6.5 `model_parameters`
+### 5.5 `model_parameters`
 
-Unified store for all algorithm parameters — both the legacy fixed-probability
-config row and the Empirical-Bayes snapshots that previously lived in a
-separate `empirical_bayes_snapshots` table.
+Unified store for all algorithm parameters — the fixed-probability policy
+row and the Empirical-Bayes snapshots.
 
 Each row is either:
 - a **policy** row (`snapshot_type IS NULL`) — set at app init and after each
@@ -1058,11 +906,10 @@ Each row is either:
 | `metadata_json` | JSON (nullable) | free-form (algorithm version, hyperparam values, sampler cursor positions) |
 | `timestamp` | datetime | when this row was inserted |
 
-### 6.6 `model_update_requests`
+### 5.6 `model_update_requests`
 
-One row per `/update`. Tracks async fit progress. The
-`callback_url` column is removed in the new design — completion is observed
-by reading `status` and `completed_at` here, rather than by being POSTed to.
+One row per `/update`. Tracks async fit progress. Completion is observed by
+reading `status` and `completed_at` here; the API does not POST anywhere.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1073,7 +920,7 @@ by reading `status` and `completed_at` here, rather than by being POSTed to.
 | `completed_at` | datetime (nullable) | set when fit terminates |
 | `error_message` | string (nullable) | set on failure |
 
-### 6.7 `thompson_sampling_params`
+### 5.7 `thompson_sampling_params`
 
 One row per `(group_id, decision_type)` when `RL_ALGORITHM = "thompson_sampling"`.
 Each row holds the bandit posterior for one independent Thompson Sampling bandit.
@@ -1087,10 +934,10 @@ Each row holds the bandit posterior for one independent Thompson Sampling bandit
 
 Unique constraint: `(group_id, decision_type)`.
 
-### 6.8 `standardization_baselines`
+### 5.8 `standardization_baselines`
 
 Per-dyad week-1 means and stds used to standardize continuous state variables before
-they enter the learner (`main.tex` §3 "Variable Standardization"). Written once per
+they enter the learner. Written once per
 (dyad, decision_type, variable) at the first `/update` after enough week-1 data is in;
 never modified thereafter.
 
@@ -1106,15 +953,14 @@ never modified thereafter.
 
 Unique constraint: `(group_id, decision_type, variable_name)`.
 
-### 6.9 `update_reproducibility_snapshots`
+### 5.9 `update_reproducibility_snapshots`
 
 Pointers to on-disk full copies of `data_uploads`, `actions`, and `groups`
 taken immediately before each `/update` completes. The actual data lives on
 disk under `repro_snapshots/<update_id>/`; this table is the index. Consumed
-by `tools/reproduce_run.py` to replay a study. Previously the
-snapshot copied `study_data`; under the new design `study_data` is itself
+by `tools/reproduce_run.py` to replay a study. (`study_data` is itself
 derived during `/update`, so the snapshot copies the upstream
-`data_uploads` instead.
+`data_uploads`.)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1129,7 +975,7 @@ derived during `/update`, so the snapshot copies the upstream
 
 ---
 
-## 7. Reproducibility
+## 6. Reproducibility
 
 The learner draws no fresh randomness at runtime. A pre-study step (`flask init-buffer`)
 pre-samples a long sequence of standard-normal and uniform primitives into a `.npz` buffer
@@ -1141,7 +987,7 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
 
 ---
 
-## 8. Failure handling & fallback
+## 7. Failure handling & fallback
 
 - **Idempotency:** a repeated `(group_id, decision_type, decision_idx)` on
   `/action` is rejected, so host retries are safe. `/upload_data` is
@@ -1152,108 +998,49 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
   `409`. The host is responsible for ensuring the first upload happens
   before the first action. Once the dyad has any upload history, subsequent
   `/action` calls succeed even if some fields are missing — they are masked.
-- **Late or corrected uploads.** Uploads that arrive *after* the action they
-  would have informed are still useful: `/update` re-derives `study_data` on
-  each run, so a later-arriving outcome can fill a previously-empty reward
-  window. The reconciliation policy for *corrected* values (overwrite vs.
-  keep both) is an open item — see below.
+- **No corrections.** The host never re-sends corrected values for a past
+  upload; every upload is simply the latest snapshot. A measurement that
+  arrives late on the host side appears in the next scheduled upload and is
+  picked up at the next `/update`.
 - **Missed `/update`.** The monitoring algorithm should re-ping if a
   scheduled update is missed; the API itself does not schedule.
-- **API unreachable:** the host draws `Bernoulli(0.5)` locally for that decision and flags it
-  as excluded from the next update (`excluded_from_update`), per `Algorithm-Monitoring.md` §2
-  fallback rows F-A1/F-A2. **[planned: confirm the host marks these and that the API can
-  ingest the flag on `/upload_data`.]**
+- **API unreachable:** the host draws `Bernoulli(0.5)` locally for that
+  decision and records `action_prob = 0.5`. The API has no record of such
+  decisions, so they never enter model fits (the fit uses only API-issued
+  actions paired with host uploads).
 - See `ADAPTS-HCT-RL-API/Possible_System_Failure.md` for the full failure-mode catalog.
 
-### 8.1 Per-endpoint server-side fallback (summary)
+### 7.1 Per-endpoint server-side fallback (summary)
 
-Each endpoint's fallback is detailed inline in §3; this table consolidates the
-"what the app server does on failure" view. Fallback IDs (F-A1, F-A2, F-U1,
-F-U2, F-U3) are defined in `Algorithm-Monitoring.md` §2. Guiding principle by
+Each endpoint's error handling is detailed inline in §2; this table
+consolidates the "what happens on failure" view. Guiding principle by
 endpoint: `/register_group` — never lose a recruitable dyad; `/action` — always return
 a safe action, never "no decision"; `/upload_data` — preserve every byte, never
 silently drop; `/update` — never publish a bad policy, keep the last good one.
 
-| Endpoint | Failure | Server-side fallback | Fallback ID | Monitoring |
-|---|---|---|---|---|
-| `/register_group` | duplicate `group_id` | idempotent upsert of consent window (not `400`) | — | — |
-| `/register_group` | missing/invalid field | reject `400`; no partial row; host re-submits | — | — |
-| `/register_group` | DB write failure | safe retry with backoff (single-row, side-effect-free) | — | E1 |
-| `/action` | learner/feature/posterior failure, missing baseline, cold-start race | `200`, `action_prob = 0.5`, `Bernoulli(0.5)` from buffer; `is_warmup`, `warmup_reason="fallback"`, `excluded_from_update=TRUE` | F-A2 | B5, C3 |
-| `/action` | no upload history | `409` today → host local `Bernoulli(0.5)`; planned masked-state `200` | F-A1 | A2 |
-| `/action` | duplicate decision triple | return the already-stored `(action, prob, rid)` (deterministic replay) | — | A3 |
-| `/action` | unregistered `group_id` | `404` + alert; host falls back locally | F-A1 | — |
-| `/action` | sample buffer unavailable | serve `0.5`, flag row, red infra alert | F-A2 | E1 |
-| `/upload_data` | malformed/schema-invalid payload | persist raw verbatim, `excluded_from_update=TRUE`, return `4xx` | F-U1 | B1, B7 |
-| `/upload_data` | missing key | accept + server-fill `"miss"` (lenient) **or** `400`+F-U1 (strict); §9 | F-U1 | B7 |
-| `/upload_data` | unknown `group_id` | `404` + alert; optional buffer pending registration | — | — |
-| `/upload_data` | DB write failure | safe retry (append-only, no idempotency key) | — | E1 |
-| `/update` | C3 sanity-gate failure | do not publish; keep previous params; mark `failed` | F-U2 | C3 |
-| `/update` | empty batch | skip fit; keep previous params; mark `completed`, log green | F-U3 | — |
-| `/update` | per-action reward-derivation error | skip that row (`reward = NULL`), derive the rest | — | B2 |
-| `/update` | background-thread crash / timeout | row stays `processing` → C1 re-pings; previous params stay active | F-U2 | C1 |
+| Endpoint | Failure | Behavior & recommended host action |
+|---|---|---|
+| `/register_group` | duplicate `group_id` | `201` — consent-window upsert, not an error |
+| `/register_group` | missing/invalid field | `400` — no partial row; correct and re-submit |
+| `/register_group` | DB write failure | `500` / `503` — safe to retry with backoff |
+| `/action` | internal learner failure | today `404`/`500` — host decides locally (`Bernoulli(0.5)`, `action_prob = 0.5`); **[planned]** `200` with randomized `action`, `action_prob = 0.5` |
+| `/action` | no upload history | `409` — host decides locally (`Bernoulli(0.5)`, `action_prob = 0.5`) |
+| `/action` | duplicate decision triple | `400` — no second action minted |
+| `/action` | unregistered `group_id` | `404` — host decides locally and fixes the registration |
+| `/action` | sample buffer unavailable | `200` with `action_prob = 0.5`; infrastructure alert raised |
+| `/upload_data` | malformed/schema-invalid payload | `400` — correct and re-send; **[planned]** payload preserved verbatim for post-trial analysis |
+| `/upload_data` | missing key | `400` — full snapshot required; send `"miss"` explicitly |
+| `/upload_data` | unknown `group_id` | `404` — register the dyad, then re-send |
+| `/upload_data` | DB write failure | `500` / `503` — safe to retry (append-only) |
+| `/update` | sanity-gate failure | fit not published; previous parameters stay active; request marked `failed` |
+| `/update` | empty batch | fit skipped; previous parameters stay active; request marked `completed` |
+| `/update` | per-action reward-derivation error | that action skipped (`reward = NULL`); the rest derived |
+| `/update` | background-thread crash / timeout | request stays `processing`; monitoring re-triggers; previous parameters stay active |
 
 ---
 
-## 9. Open items (to resolve with the dev team)
+## 8. Open items (to resolve with the dev team)
 
-1. **Implementation diff for the new contract.** All four
-   planned changes listed at the top of this document are spec-only. Code
-   changes required:
-   - `app/routes/data.py` — `/upload_data` now accepts a flat `data` dict
-     with no `decision_type` / `decision_idx`; drop the
-     `context`/`outcome` envelope; append to a new `data_uploads` table.
-   - `app/routes/action.py` — drop the `context` requirement from the
-     request body; replace the per-call context with a lookup against the
-     dyad's latest values in `data_uploads`; evaluate the server-side
-     warm-up gates (§3.2) before invoking the learner — `COUNT(*)` on
-     `groups` for `cohort`, the dyad's CP `decision_idx` for `week1` — and on
-     warm-up draw `Bernoulli(0.5)` from the sample buffer, set
-     `action_prob = 0.5`, and stamp `is_warmup` / `warmup_reason` on the
-     `actions` row.
-   - `app/models.py` — add `actions.is_warmup` and `actions.warmup_reason`
-     (Alembic migration); add the `WARMUP_WEEK1_CP_DECISIONS` config constant.
-   - `app/routes/update.py` — drop `callback_url` from the request body
-     and the callback-on-completion machinery; add timeline-based outcome
-     derivation that produces `study_data` rows.
-   - `app/models.py` + Alembic migration — add `data_uploads`; reshape
-     `study_data` for update-time derivation (or migrate existing rows);
-     drop `model_update_requests.callback_url`.
-   - `app/protocol.py` — replace the per-decision-type context/outcome
-     schemas with the single flat field dictionary (§5.1).
-   - `tests/simulate_adapts_hct.py` and the Bruno collection — update to
-     the new request shapes.
-2. **Materialization of latest-values store.** Compute on demand at `/action`
-   time (one query against `data_uploads`) vs. maintain an in-memory cache
-   updated by `/upload_data`. The first is simpler; the second is faster.
-3. **Outcome window boundaries.** §5.3 says "until the next decision of the
-   same type", but the precise rule needs nailing down (especially for the
-   AYA AM↔PM boundary and for actions taken late in the study window).
-4. **Late & corrected uploads.** Re-deriving `study_data` on every `/update`
-   handles late uploads naturally. Corrected values (same field, same dyad,
-   different number) need an explicit policy: overwrite the prior value in
-   the latest-values store, or keep both with a "supersedes" link.
-5. **GET `/api/v1/update/<update_id>`.** Should the monitoring algorithm
-   poll the DB directly or have an HTTP endpoint? Either is fine; pick one.
-6. **Drop `state` from the `/action` response** (the API already persists it).
-7. **Auth / access control** at the deployment layer (no app-level auth today).
-8. **`excluded_from_update` ingestion** on `/upload_data` for host-side fallback decisions.
-9. **Status lifecycle** (`REGISTERED/STARTED/COMPLETED`) only if the host needs it.
-10. **Scheduling robustness:** timezone/DST handling for per-dyad windows;
-    `/update`-before-`/action` ordering guarantee. Note the **warm-up
-    boundary no longer depends on date math** — it is gated on the cohort
-    registration count and the dyad's CP-decision count (§3.2), both
-    timezone-immune integer counters — so this item now covers only the
-    decision-window scheduling and the update ordering, not warm-up.
-11. **Reconciliation with `ADAPTS-HCT-Interaction-Flow.md`.** The older
-    interaction-flow doc places `/update` and the `dyad_game` /action on
-    **Sunday** morning, while §4 here places them on **Monday**.
-    The older doc also describes only the once-per-week events and does
-    not specify the daily AYA-AM / CP / AYA-PM cadence. Decision needed:
-    update the older doc to match §4, or shift §4 to Sunday.
-12. ~~**`/add_group` upsert on an existing `group_id`** (§3.1).~~ **Done.**
-    `register_group` (`app/routes/group.py`) now upserts the consent window on a
-    repeat `group_id` (updates `consent_start_date` / `consent_end_date`, ignores
-    `member_list`, returns `201`). The endpoint was also renamed
-    `/add_group` → `/register_group` (the old path stays as a deprecated alias).
-    Covered by `tests/test_groups.py`.
+1. **Scheduling robustness:** timezone/DST handling for per-dyad decision
+   windows, and the guarantee that the weekly `/update` completes before the
+   first `/action` of the week.

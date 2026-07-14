@@ -10,11 +10,11 @@ data_blueprint = Blueprint("data", __name__)
 
 def check_fields(data: dict) -> tuple[bool, str]:
     """
-    Check the required envelope of a /upload_data call (API-Spec §3.3).
+    Check the required envelope of a /upload_data call (API-Spec §2.3).
 
     Each upload is a flat full snapshot: there is no context/outcome
     distinction, no decision_type, and no decision_idx — every variable in
-    the field dictionary (§5.1) must be present in `data` (use "miss" / null
+    the field dictionary (§4.1) must be present in `data` (use "miss" / null
     to mark an unobservable value).
     """
     if not data or "group_id" not in data:
@@ -35,7 +35,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @data_blueprint.route("/upload_data", methods=["POST"])
 def upload_data(data: dict | None = None):
     """
-    Append a full flat snapshot of a dyad's latest values (API-Spec §3.3).
+    Append a full flat snapshot of a dyad's latest values (API-Spec §2.3).
 
     Append-only: every call writes a new `data_uploads` row. The "current
     value of field X for dyad Y" is `data.X` from the most recent row. /action

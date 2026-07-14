@@ -24,7 +24,7 @@ def _action(client, gid, idx, dt, ts):
 
 def _setup_nonwarmup_dyad(client, gid):
     """Register enough dyads to clear the cohort gate and rack up 6 cp_message
-    decisions for `gid` so it clears the week-1 gate (API-Spec §3.2)."""
+    decisions for `gid` so it clears the week-1 gate (API-Spec §2.2)."""
     for i in range(5):
         register_group(client, f"seed_{i:02d}")
     register_group(client, gid)
@@ -109,7 +109,13 @@ class TestClosedFormActionProb:
         assert data["warmup"] is False
 
         fb = ProtocolRLFeatureBuilder("aya_message")
-        state = np.asarray(data["state"], dtype=np.float64)
+        # state is no longer returned in the response; read it from the DB.
+        from app.models import Action
+        with client.application.app_context():
+            row = Action.query.filter_by(
+                group_id="repro_dyad_002", decision_type="aya_message", decision_idx=1
+            ).first()
+            state = np.asarray(row.state, dtype=np.float64)
         mean = np.zeros(fb.phi_dim)
         cov = _prior_covariance("aya_message")
         eta = ETA_BY_AGENT["aya_message"]

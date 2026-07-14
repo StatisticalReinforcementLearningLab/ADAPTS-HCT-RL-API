@@ -4,7 +4,7 @@ from app.routes.action import check_fields
 from tests.conftest import register_group, upload
 
 
-# /action is context-free: only the envelope is sent (API-Spec §3.2).
+# /action is context-free: only the envelope is sent (API-Spec §2.2).
 test_action_json = {
     "group_id": "test_group_123",
     "timestamp": "2026-01-06T09:00:00",
@@ -81,9 +81,10 @@ def test_request_action_success(client):
     assert response.json["action"] in (0, 1)
     assert "warmup" in response.json
     # First dyad (cohort < 5) -> warm-up: state is null, prob is 0.5.
+    # The gate reason stays internal (actions row), not in the response.
     assert response.json["warmup"] is True
-    assert response.json["warmup_reason"] == "cohort"
-    assert response.json["state"] is None
+    assert "warmup_reason" not in response.json
+    assert "state" not in response.json
     assert response.json["action_prob"] == 0.5
 
 

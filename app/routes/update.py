@@ -74,7 +74,7 @@ def backup_tables(app):
 
 def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
     """
-    Process the update request (API-Spec §3.4).
+    Process the update request (API-Spec §2.4).
 
     No callback: completion is observed by reading model_update_requests.status
     / completed_at. Rewards are derived server-side from the data_uploads
@@ -196,7 +196,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @update_blueprint.route("/update", methods=["POST"])
 def update_model():
     """
-    Updates the algorithm model (API-Spec §3.4). Asynchronous; the monitoring
+    Updates the algorithm model (API-Spec §2.4). Asynchronous; the monitoring
     algorithm triggers this and watches model_update_requests for completion.
     There is no callback.
     """

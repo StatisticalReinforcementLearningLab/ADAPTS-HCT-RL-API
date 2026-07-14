@@ -236,7 +236,7 @@ class ProtocolRLFeatureBuilder:
                     lambda c: float(c["week_in_study"]) / 14.0,
                 ),
                 # CP diary has only a mood question (no physical-symptoms item,
-                # unlike the AYA diary) — API-Spec §5.1.
+                # unlike the AYA diary) — API-Spec §4.1.
                 RawVariableSpec(
                     "cp_diary_mood",
                     lambda c: not is_missing(c.get("cp_diary_mood")),

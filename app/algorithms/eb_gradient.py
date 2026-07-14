@@ -440,7 +440,7 @@ class ThreeAgentEmpiricalBayesGradientAlgorithm(RLAlgorithm):
     }
 
     def _is_warmup(self, group_id: str, decision_type: str, decision_idx: int) -> bool:
-        # Warm-up is decided server-side in the /action route (API-Spec §3.2);
+        # Warm-up is decided server-side in the /action route (API-Spec §2.2);
         # the route draws the warm-up action and skips get_action.
         return False
 

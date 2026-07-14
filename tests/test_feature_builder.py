@@ -101,7 +101,7 @@ def test_dyad_game_uses_five_tailoring_vars():
     u = fb.base_vector(ctx)
     assert u.shape[0] == fb.base_dim
     # The pruned dyad_game state is the five tailoring variables only — no
-    # diary summaries, no relationship_quality (API-Spec §5.2).
+    # diary summaries, no relationship_quality.
     assert fb.variable_names == [
         "aya_app_engagement",
         "cp_app_engagement",

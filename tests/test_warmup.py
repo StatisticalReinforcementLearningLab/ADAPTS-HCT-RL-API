@@ -1,13 +1,23 @@
 """
-Server-side warm-up tests (API-Spec §3.2):
+Server-side warm-up tests (API-Spec §2.2):
 - /add_group takes no `warmup` field (the host cannot force/suppress warm-up)
 - a decision is Bernoulli(0.5) while the cohort has < 5 dyads (cohort gate) or
   the dyad has had < 6 cp_message decisions (week-1 gate)
-- warm-up actions report warmup=True, action_prob=0.5, state=null
+- warm-up actions report warmup=True, action_prob=0.5
 """
 
-from app.models import Group
+from app.models import Action, Group
 from tests.conftest import register_group, upload
+
+
+def _warmup_reason(client, group_id, idx, decision_type="aya_message"):
+    """The gate reason is recorded on the actions row only (not in the
+    /action response — the host does not need it)."""
+    with client.application.app_context():
+        row = Action.query.filter_by(
+            group_id=group_id, decision_type=decision_type, decision_idx=idx
+        ).first()
+        return row.warmup_reason
 
 
 def _aya_action(client, group_id, idx, ts="2026-01-06T09:00:00"):
@@ -54,9 +64,10 @@ def test_cohort_gate_warms_up_first_dyads(client):
     r = _aya_action(client, "dyad_001", 0)
     assert r.status_code == 201
     assert r.json["warmup"] is True
-    assert r.json["warmup_reason"] == "cohort"
+    assert "warmup_reason" not in r.json
+    assert _warmup_reason(client, "dyad_001", 0) == "cohort"
     assert r.json["action_prob"] == 0.5
-    assert r.json["state"] is None
+    assert "state" not in r.json
 
 
 def test_week1_gate_after_cohort_filled(client):
@@ -68,7 +79,7 @@ def test_week1_gate_after_cohort_filled(client):
     r = _aya_action(client, "dyad_000", 0)
     assert r.status_code == 201
     assert r.json["warmup"] is True
-    assert r.json["warmup_reason"] == "week1"
+    assert _warmup_reason(client, "dyad_000", 0) == "week1"
     assert r.json["action_prob"] == 0.5
 
 

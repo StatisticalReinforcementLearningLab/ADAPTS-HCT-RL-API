@@ -1,5 +1,5 @@
 """
-Server-side reward derivation (API-Spec §5.3).
+Server-side reward derivation.
 
 Each action's outcome is computed at /update time by walking forward from the
 action's timestamp on the data_uploads timeline and reading the relevant

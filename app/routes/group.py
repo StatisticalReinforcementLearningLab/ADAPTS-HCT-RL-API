@@ -31,7 +31,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 @group_blueprint.route("/add_group", methods=["POST"])  # deprecated alias
 def register_group():
     """
-    Registers a dyad, or re-registers an existing one (API-Spec §3.1).
+    Registers a dyad, or re-registers an existing one (API-Spec §2.1).
 
     Re-registration is an update, not an error: when the ``group_id`` already
     exists, the consent window (``consent_start_date`` / ``consent_end_date``)
@@ -42,7 +42,7 @@ def register_group():
     deprecated alias for the existing host contract.
 
     Warm-up is not a host concern: the API decides it at /action time from the
-    cohort size and the dyad's cp_message decision count (§3.2). There is no
+    cohort size and the dyad's cp_message decision count (§2.2). There is no
     ``warmup`` request field.
     """
     try:

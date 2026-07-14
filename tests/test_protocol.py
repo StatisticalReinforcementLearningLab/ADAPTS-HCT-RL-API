@@ -88,7 +88,7 @@ class TestContextSchemas:
     def test_game_schema_omits_diary_summaries(self):
         # The learner does not read the diary summaries as state (they are
         # weak/noisy); the dyad_game feature builder is pruned to the five
-        # tailoring variables (API-Spec §5.2).
+        # tailoring variables.
         assert "aya_diary_summary" not in CONTEXT_SCHEMAS["dyad_game"]
         assert "cp_diary_summary" not in CONTEXT_SCHEMAS["dyad_game"]
 

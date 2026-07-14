@@ -7,7 +7,7 @@ class Group(db.Model):
     Database table to store groups (dyads).
 
     Warm-up is decided server-side at /action time from the cohort size and
-    the dyad's cp_message decision count (API-Spec §3.2); it is not a
+    the dyad's cp_message decision count (API-Spec §2.2); it is not a
     per-dyad host flag and is not stored here.
     """
 
@@ -42,7 +42,7 @@ class Group(db.Model):
 
 class DataUpload(db.Model):
     """
-    Append-only log of every /upload_data call (API-Spec §6.3).
+    Append-only log of every /upload_data call (API-Spec §5.3).
 
     Each row is a full flat snapshot of every variable in the field
     dictionary (`data.X` always present, possibly the literal "miss").
@@ -291,7 +291,7 @@ class ModelUpdateRequests(db.Model):
         Initialize the ModelUpdateRequests object.
 
         The new design has no callback: completion is observed by reading
-        `status` / `completed_at` (API-Spec §3.4), not POSTed anywhere.
+        `status` / `completed_at` (API-Spec §2.4), not POSTed anywhere.
         """
         if created_at is None:
             created_at = datetime.datetime.now()
@@ -309,11 +309,11 @@ class ModelUpdateRequests(db.Model):
 
 class StudyData(db.Model):
     """
-    Update-derived (action, outcome) pairs (API-Spec §6.4).
+    Update-derived (action, outcome) pairs (API-Spec §5.4).
 
     One row per (action, derived outcome), written during /update: the action
     is located in `actions`, the outcome fields are read from later
-    `data_uploads` rows on the timeline (§5.3), and the scalar reward is
+    `data_uploads` rows on the timeline, and the scalar reward is
     computed and stored. Idempotent across /update re-runs — an existing row
     is updated in place if its outcome window has since filled in.
     """
@@ -439,7 +439,7 @@ class UpdateReproducibilitySnapshot(db.Model):
     Points to an on-disk full copy of data_uploads, actions (decision states),
     and groups taken immediately before a model update completes. Under the
     update-derived design study_data is itself produced during /update, so the
-    snapshot copies the upstream data_uploads instead (API-Spec §6.9).
+    snapshot copies the upstream data_uploads instead (API-Spec §5.9).
     """
 
     __tablename__ = "update_reproducibility_snapshots"

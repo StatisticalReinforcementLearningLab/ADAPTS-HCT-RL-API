@@ -11,7 +11,7 @@ action_blueprint = Blueprint("action", __name__)
 
 def check_fields(data: dict) -> tuple[bool, str]:
     """
-    Validate the (context-free) /action request envelope (API-Spec §3.2).
+    Validate the (context-free) /action request envelope (API-Spec §2.2).
 
     Context is no longer sent: the API reads the dyad's most recent
     /upload_data snapshot and projects the subset the requested decision_type
@@ -45,7 +45,7 @@ def check_fields(data: dict) -> tuple[bool, str]:
 
 def _evaluate_warmup(group_id: str, decision_type: str) -> tuple[bool, str | None]:
     """
-    Server-side warm-up gate (API-Spec §3.2): a decision is purely randomized
+    Server-side warm-up gate (API-Spec §2.2): a decision is purely randomized
     iff the cohort has fewer than WARMUP_COHORT_MIN_DYADS registered dyads, or
     this dyad has had fewer than WARMUP_WEEK1_CP_DECISIONS cp_message
     decisions (its first active week — cp_message fires once per active day,
@@ -88,7 +88,7 @@ def _draw_warmup_action() -> tuple[int, dict]:
 @action_blueprint.route("/action", methods=["POST"])
 def request_action():
     """
-    Request an action for a dyad (API-Spec §3.2). Context is pulled from the
+    Request an action for a dyad (API-Spec §2.2). Context is pulled from the
     dyad's latest uploaded snapshot, not the request body.
     """
     try:
@@ -143,7 +143,7 @@ def request_action():
                 409,
             )
 
-        # Project the subset this decision_type needs (§5.2). Recorded on the
+        # Project the subset this decision_type needs. Recorded on the
         # action so the decision is reproducible even if later uploads
         # overwrite individual fields; also seeds warm-up rows into the fit.
         raw_context = project_snapshot(decision_type, latest_upload.data, decision_idx)
@@ -214,11 +214,9 @@ def request_action():
                     "status": "success",
                     "message": "Action requested successfully.",
                     "group_id": group_id,
-                    "state": state,
                     "action": action,
                     "action_prob": prob,
                     "warmup": is_warmup,
-                    "warmup_reason": warmup_reason,
                     "timestamp": received_timestamp.isoformat(),
                     "rid": rid,
                 }
