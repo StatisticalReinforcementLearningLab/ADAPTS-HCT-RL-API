@@ -246,19 +246,13 @@ Response — common envelope plus:
 | `action` | int | chosen action: `0` = do not send / game off, `1` = send / game on. `null` on failure (no decision made). |
 | `action_prob` | float | **Pr(action = 1)** — the probability the learner assigned to `action = 1`, regardless of which action was chosen (no conversion needed). Always `0.5` during warm-up; `null` on failure. |
 | `warmup` | bool | `true` if a pure `Bernoulli(0.5)` draw (learner bypassed); surfaced for logging only — the host need not act on it. `null` on failure. |
-| `state` | list[float] | the state/feature vector the learner scored to produce `action_prob` (echoes `actions.state`, §5.2). Returned so the host can replay the exact decision function. `null` on warm-up and on failure. |
-| `model_param` | list[float] | the flat model-parameter vector the learner scored to produce `action_prob`. The API treats it **opaquely** — it does not depend on which learner is active or on the parameter layout; the host reconstructs whatever it needs by knowing the active learner. `null` on warm-up (no learner was used) and on failure. |
+| `state` | list[float] | the state/feature vector the learner scored, recorded alongside the decision (echoes `actions.state`, §5.2). `null` on warm-up and on failure. |
+| `model_param` | list[float] | the flat model-parameter vector the learner scored to produce `action_prob`. **Opaque to the host** — the host records/echoes it for later reproducibility and analysis but does not interpret its contents or need to know which learner is active. `null` on warm-up (no learner was used) and on failure. |
 
-**Replaying `action_prob`.** `state` + `model_param` are exactly the inputs
-needed to reproduce `action_prob`. The API is learner-agnostic and only
-guarantees to hand back the same flat `model_param` it scored; the *packing* is
-a property of the active learner, documented with that learner. For the current
-EB probit-Thompson-sampling learner, `model_param` is
-`[θ (feature_dim), Σ row-major (feature_dim²), η (1)]`, and — with
-`d = φ(state, 1) − φ(state, 0)`, `m = dᵀθ`, `v = dᵀ Σ d` — the host recomputes
-`action_prob = Pr(a = 1) = Φ( η·m / √(1 + η²·v) )` (`φ(·)` is the fixed feature
-expansion of Table 2). Note `action_prob` is `Pr(a = 1)` even when the chosen
-`action` is `0`.
+`action_prob` is always `Pr(action = 1)`, even when the chosen `action` is `0`;
+the host uses it as-is and never reconstructs it. `state` and `model_param` are
+opaque logging fields — they carry enough for the RL/analysis side to replay a
+decision offline, but the host treats them as blobs to store and hand back.
 
 ```json
 {
@@ -278,8 +272,8 @@ expansion of Table 2). Note `action_prob` is `Pr(a = 1)` even when the chosen
 }
 ```
 
-(`state` and `model_param` are abbreviated here; in practice `model_param` has
-length `feature_dim + feature_dim² + 1` for the EB learner.)
+(`state` and `model_param` are abbreviated here; their real lengths depend on
+the active learner and are not part of the host contract.)
 
 **Idempotency key:** `(group_id, decision_type, decision_idx)`. Each agent has
 its own per-dyad counter, so the same `decision_idx` may appear once per
