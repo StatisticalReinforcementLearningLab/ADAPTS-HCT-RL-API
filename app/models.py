@@ -110,11 +110,11 @@ class Action(db.Model):
     action_prob = db.Column(db.Float, nullable=False)
     is_warmup = db.Column(db.Boolean, nullable=False, default=False)
     warmup_reason = db.Column(db.String(32), nullable=True)
-    # {theta, cov, eta} the learner scored to produce action_prob (API-Spec
-    # §2.2 / §5.2). Persisted so the idempotent /action replay can return the
-    # original decision params; null on warm-up and for learners that expose
-    # no such vector.
-    decision_params = db.Column(db.JSON, nullable=True)
+    # Flat model-parameter vector the learner scored to produce action_prob
+    # (API-Spec §2.2 / §5.2), stored opaquely. Persisted so the idempotent
+    # /action replay can return it verbatim; null on warm-up and for learners
+    # that expose no such vector.
+    model_param = db.Column(db.JSON, nullable=True)
     random_state = db.Column(db.JSON, nullable=False)
     model_parameters_id = db.Column(
         db.Integer, db.ForeignKey("model_parameters.id"), nullable=False
@@ -146,7 +146,7 @@ class Action(db.Model):
         request_timestamp: datetime.datetime,
         is_warmup: bool = False,
         warmup_reason: str | None = None,
-        decision_params: dict | None = None,
+        model_param: list | None = None,
         timestamp: datetime.datetime | None = None,
     ):
         """
@@ -164,7 +164,7 @@ class Action(db.Model):
         self.action_prob = action_prob
         self.is_warmup = bool(is_warmup)
         self.warmup_reason = warmup_reason
-        self.decision_params = decision_params
+        self.model_param = model_param
         self.random_state = random_state
         self.model_parameters_id = model_parameters_id
         self.request_timestamp = request_timestamp

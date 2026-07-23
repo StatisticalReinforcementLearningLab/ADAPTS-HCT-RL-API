@@ -67,9 +67,7 @@ def _null_outputs() -> dict:
         "action_prob": None,
         "warmup": None,
         "state": None,
-        "model_theta": None,
-        "model_cov": None,
-        "eta": None,
+        "model_param": None,
     }
 
 
@@ -121,7 +119,6 @@ def _replay(action_row: Action):
     the originally minted outputs verbatim with the original rid; a lost
     response can never desync host and server.
     """
-    dp = action_row.decision_params or {}
     return envelope(
         200,
         "Duplicate Decision",
@@ -136,9 +133,7 @@ def _replay(action_row: Action):
         action_prob=action_row.action_prob,
         warmup=bool(action_row.is_warmup),
         state=action_row.state,
-        model_theta=dp.get("theta"),
-        model_cov=dp.get("cov"),
-        eta=dp.get("eta"),
+        model_param=action_row.model_param,
     )
 
 
@@ -222,7 +217,7 @@ def request_action():
         # Server-side warm-up gate.
         is_warmup, warmup_reason = _evaluate_warmup(group_id, decision_type)
 
-        decision_params = None
+        model_param = None
         if is_warmup:
             action, random_state = _draw_warmup_action()
             random_state["warmup_reason"] = warmup_reason
@@ -248,10 +243,11 @@ def request_action():
             action, prob, random_state = rl_algorithm.get_action(
                 group_id, state, {"probability": probability}, decision_type, decision_idx
             )
-            # θ / Σ / η the learner scored, for the response + replay; kept out
-            # of random_state (which is for the sample-buffer cursors).
+            # Flat model-parameter vector the learner scored, for the response
+            # + replay; kept out of random_state (which is for the sample-buffer
+            # cursors). Opaque to the API.
             if isinstance(random_state, dict):
-                decision_params = random_state.pop("decision_params", None)
+                model_param = random_state.pop("model_param", None)
 
         new_action = Action(
             group_id=group_id,
@@ -264,7 +260,7 @@ def request_action():
             action_prob=prob,
             is_warmup=is_warmup,
             warmup_reason=warmup_reason,
-            decision_params=decision_params,
+            model_param=model_param,
             random_state=random_state,
             model_parameters_id=model_parameters.id,
             request_timestamp=request_timestamp,
@@ -282,7 +278,6 @@ def request_action():
                 **_echo(data), **_null_outputs(),
             )
 
-        dp = decision_params or {}
         return envelope(
             201, "Success", "Action requested successfully.", rid,
             group_id=group_id,
@@ -292,9 +287,7 @@ def request_action():
             action_prob=prob,
             warmup=is_warmup,
             state=state,
-            model_theta=dp.get("theta"),
-            model_cov=dp.get("cov"),
-            eta=dp.get("eta"),
+            model_param=model_param,
         )
 
     except Exception as e:

@@ -1,13 +1,13 @@
-"""shared rid response field + /action decision_params
+"""shared rid response field + /action model_param
 
 Implements the API-Spec §2 preamble change that promotes ``rid`` to a common,
-always-present response field on every endpoint, plus the full-replay fields
-on /action:
+always-present response field on every endpoint, plus the flat model-parameter
+replay vector on /action:
 
 - Adds ``groups.rid`` (per-call rid of the most recent /register_group; §5.1).
 - Adds ``data_uploads.rid`` (unique per-call rid; §5.3).
-- Adds ``actions.decision_params`` (JSON {theta, cov, eta} scored to produce
-  action_prob, so the idempotent /action replay can return them; §2.2/§5.2).
+- Adds ``actions.model_param`` (JSON flat vector the learner scored to produce
+  action_prob, so the idempotent /action replay can return it; §2.2/§5.2).
 - Renames ``model_update_requests.update_id`` -> ``rid`` (§5.6).
 - Renames ``update_reproducibility_snapshots.update_id`` -> ``rid`` (§5.9).
 
@@ -45,12 +45,12 @@ def upgrade():
                 batch_op.add_column(sa.Column("rid", sa.String(length=255), nullable=True))
                 batch_op.create_unique_constraint("uq_data_uploads_rid", ["rid"])
 
-    # 3. actions.decision_params
+    # 3. actions.model_param
     if "actions" in tables:
         cols = {c["name"] for c in inspector.get_columns("actions")}
-        if "decision_params" not in cols:
+        if "model_param" not in cols:
             with op.batch_alter_table("actions") as batch_op:
-                batch_op.add_column(sa.Column("decision_params", sa.JSON(), nullable=True))
+                batch_op.add_column(sa.Column("model_param", sa.JSON(), nullable=True))
 
     # 4. model_update_requests.update_id -> rid
     if "model_update_requests" in tables:
@@ -86,9 +86,9 @@ def downgrade():
 
     if "actions" in tables:
         cols = {c["name"] for c in inspector.get_columns("actions")}
-        if "decision_params" in cols:
+        if "model_param" in cols:
             with op.batch_alter_table("actions") as batch_op:
-                batch_op.drop_column("decision_params")
+                batch_op.drop_column("model_param")
 
     if "data_uploads" in tables:
         cols = {c["name"] for c in inspector.get_columns("data_uploads")}

@@ -97,9 +97,7 @@ def test_request_action_success(client):
     assert response.json["warmup"] is True
     assert "warmup_reason" not in response.json
     assert response.json["state"] is None
-    assert response.json["model_theta"] is None
-    assert response.json["model_cov"] is None
-    assert response.json["eta"] is None
+    assert response.json["model_param"] is None
     assert response.json["action_prob"] == 0.5
     assert response.json["rid"] is not None
 

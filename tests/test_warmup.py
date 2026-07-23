@@ -69,7 +69,7 @@ def test_cohort_gate_warms_up_first_dyads(client):
     assert r.json["action_prob"] == 0.5
     # Warm-up bypasses the learner: state / model params are null (not absent).
     assert r.json["state"] is None
-    assert r.json["model_theta"] is None
+    assert r.json["model_param"] is None
 
 
 def test_week1_gate_after_cohort_filled(client):

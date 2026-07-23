@@ -230,15 +230,17 @@ class ThreeAgentEmpiricalBayesAlgorithm(RLAlgorithm):
                 "eta": eta,
                 "sampler_cursor_start": cursor_start,
                 "sampler_cursor_end": cursor_end,
-                # θ / Σ / η actually scored, surfaced for the /action response
-                # and idempotent replay (API-Spec §2.2). The route extracts this
-                # under the "decision_params" key; it lets the host recompute
-                # action_prob = Φ(η·m/√(1+η²v)) via closed_form_action_prob.
-                "decision_params": {
-                    "theta": mean.tolist(),
-                    "cov": cov.tolist(),
-                    "eta": float(eta),
-                },
+                # Flat model_param vector surfaced for the /action response and
+                # idempotent replay (API-Spec §2.2). The API stores/returns it
+                # opaquely; this learner packs [θ (phi_dim), Σ row-major
+                # (phi_dim²), η (1)] so the host can recompute action_prob =
+                # Φ(η·m/√(1+η²v)) via closed_form_action_prob. The route
+                # extracts it under the "model_param" key.
+                "model_param": (
+                    mean.tolist()
+                    + np.asarray(cov, dtype=np.float64).flatten().tolist()
+                    + [float(eta)]
+                ),
             }
 
             self.logger.info(
