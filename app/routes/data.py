@@ -1,9 +1,10 @@
 import datetime
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request
 from app.models import Group, DataUpload
 from app.extensions import db
 from app.protocol import validate_snapshot
+from app.routes.envelope import envelope, new_rid
 
 data_blueprint = Blueprint("data", __name__)
 
@@ -40,24 +41,26 @@ def upload_data(data: dict | None = None):
     Append-only: every call writes a new `data_uploads` row. The "current
     value of field X for dyad Y" is `data.X` from the most recent row. /action
     reads the latest row at decision time; /update walks the timeline to
-    derive outcomes and rewards.
+    derive outcomes and rewards. The response is the common envelope only (the
+    always-present `rid` is persisted on the row).
     """
+    rid = new_rid()
     try:
         if data is None:
-            data = request.get_json()
+            data = request.get_json(silent=True)
 
-        # Check if the required fields are present
-        fields_present, error_message = check_fields(data)
-        if not fields_present:
-            return jsonify({"status": "failed", "message": error_message}), 400
+        ok, error_message = check_fields(data)
+        if not ok:
+            return envelope(400, "Invalid Parameter", error_message, rid)
 
-        # Extract the group_id
         group_id = data["group_id"]
 
-        # Check if the group exists
         group = Group.query.filter_by(group_id=group_id).first()
         if not group:
-            return jsonify({"status": "failed", "message": "Group not found."}), 404
+            return envelope(
+                404, "Unknown Group",
+                f"group_id {group_id} is not registered.", rid,
+            )
 
         request_timestamp = data["timestamp"]
         if isinstance(request_timestamp, str):
@@ -67,16 +70,23 @@ def upload_data(data: dict | None = None):
             group_id=group_id,
             data=data["data"],
             request_timestamp=request_timestamp,
+            rid=rid,
         )
         db.session.add(upload)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logging.exception(exc)
+            return envelope(
+                503, "Service Unavailable",
+                "Database write failed; retry.", rid,
+            )
 
         logging.info(f"[Upload Data] Snapshot stored for group: {group_id}")
-
-        return jsonify({"status": "success", "message": "Data uploaded successfully."}), 201
+        return envelope(201, "Success", "Snapshot accepted.", rid)
 
     except Exception as e:
-        # Log the error
         logging.error(f"[Upload Data] Error: {e}")
         logging.exception(e)
-        return jsonify({"error": "Internal Server Error"}), 500
+        return envelope(500, "Internal Error", "Internal server error.", rid)

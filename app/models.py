@@ -15,6 +15,10 @@ class Group(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     group_id = db.Column(db.String(255), unique=True, nullable=False)
+    # Per-call rid returned by the most recent /register_group for this dyad
+    # (updated on idempotent re-registration); API-Spec §5.1. Nullable so
+    # rows written before this column existed remain valid.
+    rid = db.Column(db.String(255), nullable=True)
     group_info = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
 
@@ -22,6 +26,7 @@ class Group(db.Model):
         self,
         group_id: str,
         group_info: dict,
+        rid: str | None = None,
         created_at: datetime.datetime | None = None,
     ):
         """
@@ -30,6 +35,7 @@ class Group(db.Model):
         if created_at is None:
             created_at = datetime.datetime.now()
         self.group_id = group_id
+        self.rid = rid
         self.group_info = group_info
         self.created_at = created_at
 
@@ -55,6 +61,10 @@ class DataUpload(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     group_id = db.Column(db.String(255), nullable=False)
+    # Per-call rid returned by the /upload_data response that wrote this row
+    # (API-Spec §5.3). Nullable so rows written before this column existed
+    # remain valid; unique among non-null values.
+    rid = db.Column(db.String(255), unique=True, nullable=True)
     data = db.Column(db.JSON, nullable=False)
     request_timestamp = db.Column(db.DateTime, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
@@ -64,11 +74,13 @@ class DataUpload(db.Model):
         group_id: str,
         data: dict,
         request_timestamp: datetime.datetime,
+        rid: str | None = None,
         created_at: datetime.datetime | None = None,
     ):
         if created_at is None:
             created_at = datetime.datetime.now()
         self.group_id = group_id
+        self.rid = rid
         self.data = data
         self.request_timestamp = request_timestamp
         self.created_at = created_at
@@ -98,6 +110,11 @@ class Action(db.Model):
     action_prob = db.Column(db.Float, nullable=False)
     is_warmup = db.Column(db.Boolean, nullable=False, default=False)
     warmup_reason = db.Column(db.String(32), nullable=True)
+    # {theta, cov, eta} the learner scored to produce action_prob (API-Spec
+    # §2.2 / §5.2). Persisted so the idempotent /action replay can return the
+    # original decision params; null on warm-up and for learners that expose
+    # no such vector.
+    decision_params = db.Column(db.JSON, nullable=True)
     random_state = db.Column(db.JSON, nullable=False)
     model_parameters_id = db.Column(
         db.Integer, db.ForeignKey("model_parameters.id"), nullable=False
@@ -129,6 +146,7 @@ class Action(db.Model):
         request_timestamp: datetime.datetime,
         is_warmup: bool = False,
         warmup_reason: str | None = None,
+        decision_params: dict | None = None,
         timestamp: datetime.datetime | None = None,
     ):
         """
@@ -146,6 +164,7 @@ class Action(db.Model):
         self.action_prob = action_prob
         self.is_warmup = bool(is_warmup)
         self.warmup_reason = warmup_reason
+        self.decision_params = decision_params
         self.random_state = random_state
         self.model_parameters_id = model_parameters_id
         self.request_timestamp = request_timestamp
@@ -273,7 +292,9 @@ class ModelUpdateRequests(db.Model):
     __tablename__ = "model_update_requests"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    update_id = db.Column(db.String(255), nullable=False)
+    # Per-call rid returned in the 202 response; the key the monitoring
+    # algorithm polls (API-Spec §5.6). Renamed from the former `update_id`.
+    rid = db.Column(db.String(255), unique=True, nullable=False)
     status = db.Column(db.String(50), nullable=False)
     request_timestamp = db.Column(db.DateTime, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False)
@@ -282,7 +303,7 @@ class ModelUpdateRequests(db.Model):
 
     def __init__(
         self,
-        update_id: str,
+        rid: str,
         request_timestamp: datetime.datetime,
         status: str = "processing",
         created_at: datetime.datetime | None = None,
@@ -295,7 +316,7 @@ class ModelUpdateRequests(db.Model):
         """
         if created_at is None:
             created_at = datetime.datetime.now()
-        self.update_id = update_id
+        self.rid = rid
         self.request_timestamp = request_timestamp
         self.status = status
         self.created_at = created_at
@@ -304,7 +325,7 @@ class ModelUpdateRequests(db.Model):
         """
         Return a string representation of the ModelUpdateRequests object.
         """
-        return f"<ModelUpdateRequests update_id={self.update_id}, status={self.status}>"
+        return f"<ModelUpdateRequests rid={self.rid}, status={self.status}>"
 
 
 class StudyData(db.Model):
@@ -445,7 +466,9 @@ class UpdateReproducibilitySnapshot(db.Model):
     __tablename__ = "update_reproducibility_snapshots"
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    update_id = db.Column(db.String(255), nullable=False)
+    # The /update call's rid; matches ModelUpdateRequests.rid (API-Spec §5.9).
+    # Renamed from the former `update_id`.
+    rid = db.Column(db.String(255), nullable=False)
     model_parameters_id = db.Column(db.Integer, nullable=True)
     snapshot_dir = db.Column(db.String(2048), nullable=False)
     data_uploads_count = db.Column(db.Integer, nullable=False, default=0)
@@ -456,7 +479,7 @@ class UpdateReproducibilitySnapshot(db.Model):
 
     def __init__(
         self,
-        update_id: str,
+        rid: str,
         snapshot_dir: str,
         model_parameters_id: int | None = None,
         data_uploads_count: int = 0,
@@ -467,7 +490,7 @@ class UpdateReproducibilitySnapshot(db.Model):
     ):
         if created_at is None:
             created_at = datetime.datetime.now()
-        self.update_id = update_id
+        self.rid = rid
         self.model_parameters_id = model_parameters_id
         self.snapshot_dir = snapshot_dir
         self.data_uploads_count = data_uploads_count

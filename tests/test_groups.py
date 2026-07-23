@@ -13,9 +13,10 @@ test_json = {
 # Test check_fields for group route
 def test_check_fields_group_missing_group_id():
     data = {}
-    result, error_message = check_fields(data)
+    result, error_message, field = check_fields(data)
     assert not result
     assert "group_id is required." in error_message
+    assert field == "group_id"
 
 def test_check_fields_group_valid():
     data = {
@@ -24,9 +25,10 @@ def test_check_fields_group_valid():
         "consent_start_date": "2025-01-01",
         "consent_end_date": "2025-01-01",
     }
-    result, error_message = check_fields(data)
+    result, error_message, field = check_fields(data)
     assert result
     assert error_message == ""
+    assert field is None
 
 def test_register_group_missing_field(client):
     """
@@ -48,8 +50,8 @@ def test_register_group_missing_field(client):
 
 def test_register_group_reregister_updates_consent(client):
     """
-    Re-registering an existing group updates the consent window (upsert) and
-    leaves member_list unchanged. It returns 201, not 400.
+    Re-registering an existing group with the SAME member_list updates the
+    consent window (upsert). It returns 201, not 400.
     """
     # Register the group for the first time
     first = client.post(
@@ -58,13 +60,12 @@ def test_register_group_reregister_updates_consent(client):
     )
     assert first.status_code == 201
 
-    # Re-register the same group with a new consent window and a different
-    # member_list, which should be ignored.
+    # Re-register the same group with a new consent window, same members.
     response = client.post(
         "/api/v1/register_group",
         json={
             "group_id": "test_group_123",
-            "member_list": ["someone_else"],
+            "member_list": ["member1", "member2"],
             "consent_start_date": "2025-02-01",
             "consent_end_date": "2025-05-01",
         },
@@ -81,6 +82,32 @@ def test_register_group_reregister_updates_consent(client):
 
     # No duplicate row was created.
     assert Group.query.filter_by(group_id="test_group_123").count() == 1
+
+
+def test_register_group_member_mismatch_rejected(client):
+    """
+    A re-registration whose member_list differs from the recorded members is
+    rejected with 409 Member Mismatch (API-Spec §2.1), not silently ignored.
+    """
+    first = client.post("/api/v1/register_group", json=test_json)
+    assert first.status_code == 201
+
+    response = client.post(
+        "/api/v1/register_group",
+        json={
+            "group_id": "test_group_123",
+            "member_list": ["someone_else"],
+            "consent_start_date": "2025-02-01",
+            "consent_end_date": "2025-05-01",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json["title"] == "Member Mismatch"
+
+    # Nothing changed: original members and consent window stand.
+    grp = Group.query.filter_by(group_id="test_group_123").first()
+    assert grp.group_info["member_list"] == ["member1", "member2"]
+    assert grp.group_info["consent_start_date"] == "2025-01-01"
 
 
 def test_register_group_success(client):

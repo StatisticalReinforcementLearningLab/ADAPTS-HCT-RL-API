@@ -1,46 +1,76 @@
 import logging
 import datetime
-import uuid
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, current_app
 from app.extensions import db
 from app.models import Group, Action, ModelParameters, DataUpload
 from app.protocol import validate_decision_type, project_snapshot
+from app.routes.envelope import envelope, new_rid
 
 action_blueprint = Blueprint("action", __name__)
 
 
-def check_fields(data: dict) -> tuple[bool, str]:
+def check_fields(data: dict) -> tuple[bool, str, str | None]:
     """
     Validate the (context-free) /action request envelope (API-Spec §2.2).
 
-    Context is no longer sent: the API reads the dyad's most recent
-    /upload_data snapshot and projects the subset the requested decision_type
-    needs.
+    Returns ``(ok, message, offending_field)`` — the offending field is echoed
+    as ``null`` per the §2 null-discipline. Context is not sent: the API reads
+    the dyad's most recent /upload_data snapshot and projects the subset the
+    requested decision_type needs.
     """
-    if not data or "group_id" not in data or "timestamp" not in data:
-        return False, "group_id and timestamp are required."
+    if data is None:
+        return False, "Request body is required.", None
 
+    if "group_id" not in data:
+        return False, "group_id is required.", "group_id"
     if not isinstance(data["group_id"], str):
-        return False, "group_id must be a string."
+        return False, "group_id must be a string.", "group_id"
 
-    if not isinstance(data["timestamp"], str) and not isinstance(
-        data["timestamp"], datetime.datetime
-    ):
-        return False, "timestamp must be a string or datetime object."
+    if "timestamp" not in data:
+        return False, "timestamp is required.", "timestamp"
+    if not isinstance(data["timestamp"], (str, datetime.datetime)):
+        return False, "timestamp must be a string or datetime object.", "timestamp"
 
     if "decision_idx" not in data:
-        return False, "decision_idx is required."
-
-    if not isinstance(data["decision_idx"], int):
-        return False, "decision_idx must be an integer."
+        return False, "decision_idx is required.", "decision_idx"
+    if not isinstance(data["decision_idx"], int) or isinstance(data["decision_idx"], bool):
+        return False, "decision_idx must be an integer.", "decision_idx"
 
     if "decision_type" not in data:
-        return False, "decision_type is required."
-
+        return False, "decision_type is required.", "decision_type"
     if not isinstance(data["decision_type"], str):
-        return False, "decision_type must be a string."
+        return False, "decision_type must be a string.", "decision_type"
 
-    return validate_decision_type(data["decision_type"])
+    ok, message = validate_decision_type(data["decision_type"])
+    if not ok:
+        return False, message, "decision_type"
+    return True, "", None
+
+
+def _echo(data: dict | None, null_field: str | None = None) -> dict:
+    """Echo the parsed request identifiers, nulling the failure's cause."""
+    data = data or {}
+    echo = {
+        "group_id": data.get("group_id"),
+        "decision_type": data.get("decision_type"),
+        "decision_idx": data.get("decision_idx"),
+    }
+    if null_field in echo:
+        echo[null_field] = None
+    return echo
+
+
+def _null_outputs() -> dict:
+    """The un-producible decision outputs, all null (used on every failure)."""
+    return {
+        "action": None,
+        "action_prob": None,
+        "warmup": None,
+        "state": None,
+        "model_theta": None,
+        "model_cov": None,
+        "eta": None,
+    }
 
 
 def _evaluate_warmup(group_id: str, decision_type: str) -> tuple[bool, str | None]:
@@ -85,18 +115,49 @@ def _draw_warmup_action() -> tuple[int, dict]:
     return int(_random.random() < 0.5), {"mode": "warmup"}
 
 
+def _replay(action_row: Action):
+    """
+    Idempotent replay of an already-committed decision (API-Spec §2.2). Returns
+    the originally minted outputs verbatim with the original rid; a lost
+    response can never desync host and server.
+    """
+    dp = action_row.decision_params or {}
+    return envelope(
+        200,
+        "Duplicate Decision",
+        f"Returning the existing action for ("
+        f"{action_row.group_id}, {action_row.decision_type}, "
+        f"{action_row.decision_idx}).",
+        action_row.rid,
+        group_id=action_row.group_id,
+        decision_type=action_row.decision_type,
+        decision_idx=action_row.decision_idx,
+        action=action_row.action,
+        action_prob=action_row.action_prob,
+        warmup=bool(action_row.is_warmup),
+        state=action_row.state,
+        model_theta=dp.get("theta"),
+        model_cov=dp.get("cov"),
+        eta=dp.get("eta"),
+    )
+
+
 @action_blueprint.route("/action", methods=["POST"])
 def request_action():
     """
     Request an action for a dyad (API-Spec §2.2). Context is pulled from the
     dyad's latest uploaded snapshot, not the request body.
     """
+    rid = new_rid()
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        fields_present, error_message = check_fields(data)
-        if not fields_present:
-            return jsonify({"status": "failed", "message": error_message}), 400
+        ok, message, field = check_fields(data)
+        if not ok:
+            return envelope(
+                400, "Invalid Parameter", message, rid,
+                **_echo(data, field), **_null_outputs(),
+            )
 
         group_id = data["group_id"]
         decision_idx = data["decision_idx"]
@@ -106,25 +167,22 @@ def request_action():
             request_timestamp = datetime.datetime.fromisoformat(request_timestamp)
         received_timestamp = datetime.datetime.now()
 
-        # Check if the group exists in the database
+        # Unknown group -> 404 (group_id is the offender, echoed as null).
         group = Group.query.filter_by(group_id=group_id).first()
         if not group:
-            return jsonify({"status": "failed", "message": "Group not found."}), 404
+            return envelope(
+                404, "Unknown Group",
+                f"group_id {group_id} is not registered.", rid,
+                **_echo(data, "group_id"), **_null_outputs(),
+            )
 
-        # Idempotency: (group_id, decision_type, decision_idx) is per-agent.
-        action_row = Action.query.filter_by(
+        # Idempotency: a repeated (group_id, decision_type, decision_idx)
+        # replays the original decision (200), it is not an error.
+        existing = Action.query.filter_by(
             group_id=group_id, decision_type=decision_type, decision_idx=decision_idx
         ).first()
-        if action_row:
-            return (
-                jsonify(
-                    {
-                        "status": "failed",
-                        "message": "Decision index already exists for this (group, decision_type).",
-                    }
-                ),
-                400,
-            )
+        if existing:
+            return _replay(existing)
 
         # Pull the dyad's most recent uploaded snapshot; 409 if none yet.
         latest_upload = (
@@ -133,32 +191,30 @@ def request_action():
             .first()
         )
         if latest_upload is None:
-            return (
-                jsonify(
-                    {
-                        "status": "failed",
-                        "message": "No /upload_data received for this group yet.",
-                    }
-                ),
-                409,
+            return envelope(
+                409, "No State Available",
+                f"No /upload_data has been received for {group_id}; "
+                "send a snapshot first.", rid,
+                **_echo(data), **_null_outputs(),
             )
 
-        # Project the subset this decision_type needs. Recorded on the
-        # action so the decision is reproducible even if later uploads
-        # overwrite individual fields; also seeds warm-up rows into the fit.
+        # Project the subset this decision_type needs. Recorded on the action
+        # so the decision is reproducible even if later uploads overwrite
+        # individual fields; also seeds warm-up rows into the fit.
         raw_context = project_snapshot(decision_type, latest_upload.data, decision_idx)
 
-        # Get the latest "policy" row (non-snapshot); EB snapshot rows live in
-        # the same table and are filtered out.
+        # Latest "policy" row (non-snapshot); EB snapshot rows are filtered out.
         model_parameters = (
             ModelParameters.query.filter(ModelParameters.snapshot_type.is_(None))
             .order_by(ModelParameters.timestamp.desc())
             .first()
         )
         if not model_parameters:
-            return (
-                jsonify({"status": "failed", "message": "Model parameters not found."}),
-                404,
+            return envelope(
+                503, "Model Not Initialized",
+                f"The learner for {decision_type} is not loaded; the "
+                "deployment is not ready to serve decisions.", rid,
+                **_echo(data), **_null_outputs(),
             )
 
         rl_algorithm = current_app.rl_algorithm
@@ -166,6 +222,7 @@ def request_action():
         # Server-side warm-up gate.
         is_warmup, warmup_reason = _evaluate_warmup(group_id, decision_type)
 
+        decision_params = None
         if is_warmup:
             action, random_state = _draw_warmup_action()
             random_state["warmup_reason"] = warmup_reason
@@ -179,14 +236,22 @@ def request_action():
             }
             status, state = rl_algorithm.make_state(context_with_meta)
             if not status:
-                return jsonify({"status": "failed", "message": state}), 400
+                # Context is server-projected, not host input, so a make_state
+                # failure is an internal error rather than a bad request.
+                return envelope(
+                    500, "Internal Error",
+                    f"Learner could not build the state: {state}", rid,
+                    **_echo(data), **_null_outputs(),
+                )
 
             probability = model_parameters.probability_of_action
             action, prob, random_state = rl_algorithm.get_action(
                 group_id, state, {"probability": probability}, decision_type, decision_idx
             )
-
-        rid = str(uuid.uuid4())[:8]
+            # θ / Σ / η the learner scored, for the response + replay; kept out
+            # of random_state (which is for the sample-buffer cursors).
+            if isinstance(random_state, dict):
+                decision_params = random_state.pop("decision_params", None)
 
         new_action = Action(
             group_id=group_id,
@@ -199,33 +264,44 @@ def request_action():
             action_prob=prob,
             is_warmup=is_warmup,
             warmup_reason=warmup_reason,
+            decision_params=decision_params,
             random_state=random_state,
             model_parameters_id=model_parameters.id,
             request_timestamp=request_timestamp,
             timestamp=received_timestamp,
         )
-
         db.session.add(new_action)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logging.exception(exc)
+            return envelope(
+                500, "Internal Error",
+                "Failed to persist the action.", rid,
+                **_echo(data), **_null_outputs(),
+            )
 
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "message": "Action requested successfully.",
-                    "group_id": group_id,
-                    "action": action,
-                    "action_prob": prob,
-                    "warmup": is_warmup,
-                    "timestamp": received_timestamp.isoformat(),
-                    "rid": rid,
-                }
-            ),
-            201,
+        dp = decision_params or {}
+        return envelope(
+            201, "Success", "Action requested successfully.", rid,
+            group_id=group_id,
+            decision_type=decision_type,
+            decision_idx=decision_idx,
+            action=action,
+            action_prob=prob,
+            warmup=is_warmup,
+            state=state,
+            model_theta=dp.get("theta"),
+            model_cov=dp.get("cov"),
+            eta=dp.get("eta"),
         )
 
     except Exception as e:
-        # Log the exception
         logging.error(f"[Action] Error: {e}")
         logging.exception(e)
-        return jsonify({"status": "failed", "message": "Internal server error."}), 500
+        return envelope(
+            500, "Internal Error",
+            "Learner raised an exception while sampling the action.", rid,
+            **_echo(request.get_json(silent=True)), **_null_outputs(),
+        )

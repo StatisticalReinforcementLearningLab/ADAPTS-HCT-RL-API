@@ -52,19 +52,19 @@ def test_update_model_success(client):
         json={"timestamp": "2026-01-12T03:00:00"},
     )
     assert response.status_code == 202
-    assert response.json["status"] == "processing"
-    update_id = response.get_json()["update_id"]
+    assert response.json["title"] == "Update Accepted"
+    rid = response.get_json()["rid"]
 
     # Poll for completion (no callback).
     for _ in range(30):
         with client.application.app_context():
-            row = ModelUpdateRequests.query.filter_by(update_id=update_id).first()
+            row = ModelUpdateRequests.query.filter_by(rid=rid).first()
             if row is not None and row.status in ("completed", "failed"):
                 break
         time.sleep(0.1)
 
     with client.application.app_context():
-        update_row = ModelUpdateRequests.query.filter_by(update_id=update_id).first()
+        update_row = ModelUpdateRequests.query.filter_by(rid=rid).first()
         assert update_row is not None
         assert update_row.status == "completed"
         assert update_row.completed_at is not None

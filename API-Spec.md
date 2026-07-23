@@ -74,7 +74,7 @@ echoed; only the un-producible decision outputs are `null`):
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -246,8 +246,18 @@ Response — common envelope plus:
 | `action` | int | chosen action: `0` = do not send / game off, `1` = send / game on. `null` on failure (no decision made). |
 | `action_prob` | float | **Pr(action = 1)** — the probability the learner assigned to `action = 1`, regardless of which action was chosen (no conversion needed). Always `0.5` during warm-up; `null` on failure. |
 | `warmup` | bool | `true` if a pure `Bernoulli(0.5)` draw (learner bypassed); surfaced for logging only — the host need not act on it. `null` on failure. |
-| `state` | list[float] | the state/feature vector `φ(s, a)` the learner scored to produce `action_prob` (echoes `actions.state`, §5.2). Returned so the host can replay the exact decision function. `null` on failure. |
-| `model_theta` | list[float] | the model parameter vector `θ` in effect at decision time (the `theta` of the `model_parameters` row referenced by `actions.model_parameters_id`, §5.2, §5.5). With `state`, this lets the host recompute `action_prob` by calling the decision function directly. `null` on warm-up (no learner was used) and on failure. |
+| `state` | list[float] | the state/feature vector the learner scored to produce `action_prob` (echoes `actions.state`, §5.2). Returned so the host can replay the exact decision function. `null` on warm-up and on failure. |
+| `model_theta` | list[float] | the model parameter (posterior mean) vector `θ` the learner scored. `null` on warm-up (no learner was used) and on failure. |
+| `model_cov` | list[list[float]] | the posterior covariance matrix `Σ` (`feature_dim × feature_dim`) the learner scored. Required for probit Thompson sampling — `action_prob` depends on `Σ`, not just `θ`. `null` on warm-up and on failure. |
+| `eta` | float | the probit-TS inverse-temperature `η` used. `null` on warm-up and on failure. |
+
+**Replaying `action_prob`.** The active learner scores the marginal probit
+Thompson-sampling allocation in closed form, so `state` + `model_theta` +
+`model_cov` + `eta` are exactly the inputs needed to reproduce `action_prob`:
+with `d = φ(state, 1) − φ(state, 0)`, `m = dᵀθ`, and `v = dᵀ Σ d`,
+`action_prob = Pr(a = 1) = Φ( η·m / √(1 + η²·v) )`. (`φ(·)` is the fixed feature
+expansion of Table 2; `θ = model_theta`, `Σ = model_cov`.) Note `action_prob` is
+`Pr(a = 1)` even when the chosen `action` is `0`.
 
 ```json
 {
@@ -262,10 +272,16 @@ Response — common envelope plus:
   "action_prob": 0.65,
   "rid": "a1b2c3d4",
   "warmup": false,
-  "state": [1.0, 1.0, 0.0, 0.6, 1.0, 0.4, 0.0, 0.6, 0.0, 0.4],
-  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17, -0.03, 0.09]
+  "state": [1.0, 0.0, 0.6, 1.0, 0.4],
+  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17],
+  "model_cov": [[0.05, 0.0], [0.0, 0.05]],
+  "eta": 1.0
 }
 ```
+
+(`state`, `model_theta`, and `model_cov` are abbreviated here; in practice
+`model_theta` has length `feature_dim` and `model_cov` is `feature_dim ×
+feature_dim`.)
 
 **Idempotency key:** `(group_id, decision_type, decision_idx)`. Each agent has
 its own per-dyad counter, so the same `decision_idx` may appear once per
@@ -275,8 +291,9 @@ its own per-dyad counter, so the same `decision_idx` may appear once per
 the host re-sends an `/action` for a triple that already has a committed
 decision (e.g. the first response was lost to a timeout and the host retried),
 the API returns `200` with `title: "Duplicate Decision"` and the **originally
-minted** `action`, `action_prob`, `rid`, `warmup`, `state`, and `model_theta`
-— never a freshly drawn action. This makes `/action` safe to retry: a lost
+minted** `action`, `action_prob`, `rid`, `warmup`, `state`, `model_theta`,
+`model_cov`, and `eta` — never a freshly drawn action. This makes `/action`
+safe to retry: a lost
 response can never cause the server and the host to disagree about which action
 was taken, and no second action is minted. The host should treat this `200`
 exactly like a `201` success and use the returned action.
@@ -293,8 +310,10 @@ exactly like a `201` success and use the returned action.
   "action_prob": 0.65,
   "rid": "a1b2c3d4",
   "warmup": false,
-  "state": [1.0, 1.0, 0.0, 0.6, 1.0, 0.4, 0.0, 0.6, 0.0, 0.4],
-  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17, -0.03, 0.09]
+  "state": [1.0, 0.0, 0.6, 1.0, 0.4],
+  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17],
+  "model_cov": [[0.05, 0.0], [0.0, 0.05]],
+  "eta": 1.0
 }
 ```
 
@@ -328,7 +347,7 @@ any field that is itself the cause of failure are `null`.
   "group_id": "dyad_007", "decision_type": null, "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -342,7 +361,7 @@ any field that is itself the cause of failure are `null`.
   "group_id": null, "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -356,7 +375,7 @@ any field that is itself the cause of failure are `null`.
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -370,7 +389,7 @@ any field that is itself the cause of failure are `null`.
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -384,7 +403,7 @@ any field that is itself the cause of failure are `null`.
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
   "action": null, "action_prob": null, "warmup": null,
-  "state": null, "model_theta": null
+  "state": null, "model_theta": null, "model_cov": null, "eta": null
 }
 ```
 
@@ -1099,11 +1118,12 @@ so the action can be replayed deterministically.
 | `decision_idx` | int | per-`(dyad, decision_type)` decision counter; component of the idempotency key |
 | `decision_type` | string | `aya_message` / `cp_message` / `dyad_game` |
 | `raw_context` | JSON | the per-agent context used at decision time — projected at action time from the dyad's latest values in `data_uploads`. Recorded explicitly so the decision is reproducible even if later uploads overwrite individual fields. |
-| `state` | JSON | the feature vector `phi(s, a)` fed to the learner |
+| `state` | JSON | the state/feature vector scored at decision time; echoed to the `/action` response as `state` (§2.2) |
 | `action` | int | chosen action ∈ {0, 1} |
 | `action_prob` | float | Pr(action = 1), regardless of the chosen action; always `0.5` on warm-up rows |
 | `is_warmup` | bool | `true` if this decision was a `Bernoulli(0.5)` warm-up draw (learner bypassed), per §2.2 |
 | `warmup_reason` | string (nullable) | `cohort` / `week1` on warm-up rows; `NULL` otherwise |
+| `decision_params` | JSON (nullable) | `{theta, cov, eta}` the learner scored to produce `action_prob`; echoed to the `/action` response as `model_theta` / `model_cov` / `eta` and returned verbatim on the idempotent replay (§2.2). `NULL` on warm-up rows and for learners that expose no such vector. |
 | `random_state` | JSON | sample-buffer cursor positions for this draw (for replay) |
 | `model_parameters_id` | int (FK) | which `model_parameters` row was used |
 | `request_timestamp` | datetime | timestamp the host stamped on the `/action` request |

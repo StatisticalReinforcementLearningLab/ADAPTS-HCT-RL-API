@@ -1,7 +1,7 @@
 """
 Full dataset + decision-state snapshots before each model update.
 
-Writes JSON files under REPRO_SNAPSHOT_ROOT/<update_id>/:
+Writes JSON files under REPRO_SNAPSHOT_ROOT/<rid>/:
   - data_uploads.json (the upstream timeline study_data is derived from)
   - actions.json (includes `state` used at decision time)
   - groups.json
@@ -40,16 +40,17 @@ def _write_json(path: str, data: Any) -> int:
     return len(text.encode("utf-8"))
 
 
-def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int | None) -> str | None:
+def save_pre_update_repro_snapshot(app, rid: str, model_parameters_id: int | None) -> str | None:
     """
     Persist a full copy of study_data, actions (with state), and groups
     before the learner runs. Returns snapshot directory or None if disabled.
+    ``rid`` is the /update call's request id (API-Spec §5.9).
     """
     if not app.config.get("SAVE_UPDATE_REPRO_SNAPSHOTS", True):
         return None
 
     root = app.config.get("REPRO_SNAPSHOT_ROOT", "repro_snapshots")
-    out_dir = os.path.abspath(os.path.join(root, update_id))
+    out_dir = os.path.abspath(os.path.join(root, rid))
     os.makedirs(out_dir, exist_ok=True)
 
     upload_rows = DataUpload.query.order_by(
@@ -116,7 +117,7 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
         updates_payload.append(
             {
                 "id": r.id,
-                "update_id": r.update_id,
+                "rid": r.rid,
                 "status": r.status,
                 "request_timestamp": r.request_timestamp,
                 "created_at": r.created_at,
@@ -126,7 +127,7 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
         )
 
     meta = {
-        "update_id": update_id,
+        "rid": rid,
         "model_parameters_id": model_parameters_id,
         "saved_at": datetime.datetime.now().isoformat(),
         "data_uploads_count": len(upload_payload),
@@ -145,7 +146,7 @@ def save_pre_update_repro_snapshot(app, update_id: str, model_parameters_id: int
     total += _write_json(os.path.join(out_dir, "metadata.json"), meta)
 
     row = UpdateReproducibilitySnapshot(
-        update_id=update_id,
+        rid=rid,
         model_parameters_id=model_parameters_id,
         snapshot_dir=out_dir,
         data_uploads_count=len(upload_payload),

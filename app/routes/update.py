@@ -1,11 +1,10 @@
 import datetime
 import logging
-import uuid
 import shutil
 import os
 import csv
 from threading import Thread
-from flask import Blueprint, current_app, request, jsonify
+from flask import Blueprint, current_app, request
 from app.models import (
     ModelParameters,
     StudyData,
@@ -20,6 +19,7 @@ from app.algorithms.base import RLAlgorithm
 from app.extensions import db
 from app.reward_derivation import derive_study_data
 from app.repro_snapshot import save_pre_update_repro_snapshot
+from app.routes.envelope import envelope, new_rid
 
 update_blueprint = Blueprint("update", __name__)
 
@@ -72,13 +72,13 @@ def backup_tables(app):
     return f"{backup_dir}.zip"
 
 
-def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
+def process_update_request(app, rid: str, rl_algorithm: RLAlgorithm):
     """
     Process the update request (API-Spec §2.4).
 
     No callback: completion is observed by reading model_update_requests.status
     / completed_at. Rewards are derived server-side from the data_uploads
-    timeline before fitting.
+    timeline before fitting. ``rid`` keys the model_update_requests row.
     """
     try:
         # Check if the database backup is enabled
@@ -131,7 +131,7 @@ def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
             }
 
             snap_dir = save_pre_update_repro_snapshot(
-                app, update_id, current_params.id if current_params else None
+                app, rid, current_params.id if current_params else None
             )
             if snap_dir:
                 app.logger.info("Pre-update reproducibility snapshot: %s", snap_dir)
@@ -154,14 +154,14 @@ def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
 
             # Update the status of the request
             model_update_request = ModelUpdateRequests.query.filter_by(
-                update_id=update_id
+                rid=rid
             ).first()
             model_update_request.status = "completed"
             model_update_request.completed_at = datetime.datetime.now()
             db.session.commit()
 
             # Log the completion
-            logging.info(f"[Update] Update ID: {update_id} completed.")
+            logging.info(f"[Update] rid: {rid} completed.")
 
     except Exception as e:
         with app.app_context():
@@ -171,7 +171,7 @@ def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
 
             # Update the status of the request
             model_update_request = ModelUpdateRequests.query.filter_by(
-                update_id=update_id
+                rid=rid
             ).first()
             if model_update_request is not None:
                 model_update_request.status = "failed"
@@ -180,7 +180,7 @@ def process_update_request(app, update_id: str, rl_algorithm: RLAlgorithm):
                 db.session.commit()
 
             # Log the completion
-            logging.info(f"[Update] Update ID: {update_id} failed.")
+            logging.info(f"[Update] rid: {rid} failed.")
 
 
 def check_fields(data: dict) -> tuple[bool, str]:
@@ -198,15 +198,17 @@ def update_model():
     """
     Updates the algorithm model (API-Spec §2.4). Asynchronous; the monitoring
     algorithm triggers this and watches model_update_requests for completion.
-    There is no callback.
+    There is no callback. The always-present `rid` keys the
+    model_update_requests row the monitoring algorithm polls.
     """
+    rid = new_rid()
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         # Check if the required fields are present
         fields_present, error_message = check_fields(data)
         if not fields_present:
-            return jsonify({"status": "failed", "message": error_message}), 400
+            return envelope(400, "Invalid Parameter", error_message, rid)
 
         # Extract the data
         request_timestamp = data["timestamp"]
@@ -215,33 +217,39 @@ def update_model():
 
         # Get the RL algorithm
         rl_algorithm = current_app.rl_algorithm
+        logging.info(f"[Update] rid: {rid}")
 
-        # Generate a unique update ID for the request
-        update_id = str(uuid.uuid4())
-        logging.info(f"[Update] Update ID: {update_id}")
-
-        # Add the update request to the database
-        model_update_request = ModelUpdateRequests(update_id, request_timestamp)
-        db.session.add(model_update_request)
-        db.session.commit()
+        # Enqueue the update request. `rid` is the key the monitoring algorithm
+        # polls; on an enqueue failure no model_update_requests row is created.
+        try:
+            model_update_request = ModelUpdateRequests(rid, request_timestamp)
+            db.session.add(model_update_request)
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            logging.exception(exc)
+            return envelope(
+                503, "Service Unavailable",
+                "Could not start the update; retry.", rid,
+            )
 
         app = current_app._get_current_object()  # Get the actual app object
         if app.config.get("TESTING"):
             # Run inline under tests: a background thread sharing the in-memory
             # SQLite connection races the request thread's transaction.
-            process_update_request(app, update_id, rl_algorithm)
+            process_update_request(app, rid, rl_algorithm)
         else:
             # Process the update request in a separate thread.
             thread = Thread(
                 target=process_update_request,
-                args=(app, update_id, rl_algorithm),
+                args=(app, rid, rl_algorithm),
             )
             thread.start()
 
-        return jsonify({"status": "processing", "update_id": update_id}), 202
+        return envelope(202, "Update Accepted", "Model update started.", rid)
 
     except Exception as e:
         # Log the error
         logging.error(f"[Update] Error: {e}")
         logging.exception(e)
-        return jsonify({"error": "Internal server error."}), 500
+        return envelope(503, "Service Unavailable", "Could not start the update; retry.", rid)
