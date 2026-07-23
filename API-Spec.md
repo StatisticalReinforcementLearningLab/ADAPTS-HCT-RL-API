@@ -11,7 +11,12 @@ The contract from the host's perspective:
 3. **`/update` issues no callback.** The monitoring algorithm schedules updates
    and watches for completion via the `model_update_requests` table; the API
    does not POST back. See §2.4.
-
+4. **Every response uses one common envelope.** A given endpoint returns the
+   same set of fields regardless of success, failure, or failure type. Every
+   response carries `status`, `title`, `message`, and `server_timestamp`; the
+   endpoint-specific fields are added on top. On failure a field is `null` only
+   when the failure makes its value unknown — everything the API still knows
+   (valid identifiers, per-call ids like `rid`) is echoed. See the §2 preamble.
 
 ---
 
@@ -28,6 +33,50 @@ the monitoring algorithm.
 ---
 
 ## 2. Endpoints
+
+### Common response format
+
+Every endpoint returns the **same envelope on every call** — success or
+failure, regardless of failure type. Five fields are always present:
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | int | HTTP status code, echoed in the body (equals the response's HTTP status, so a client may branch on either). Success: `201` (`202` for `/update`; `200` for an idempotent `/action` replay, §2.2). Client errors: `400`, `404`, `409`. Server errors: `500`, `503`. |
+| `title` | string | stable outcome label, e.g. `"Success"`, `"Invalid Parameter"`, `"Unknown Group"`, `"No State Available"`, `"Duplicate Decision"`, `"Internal Error"`, `"Service Unavailable"`; distinguishes failures that share one HTTP code |
+| `message` | string | human-readable detail, e.g. `"decision_type must be one of aya_message / cp_message / dyad_game."` |
+| `server_timestamp` | ISO-8601 string | server time the response was produced. Named distinctly from the request-body `timestamp` (the host's decision/upload time) to avoid the request/response key collision. |
+| `rid` | string | per-call request id the API assigns to **every** call on **every** endpoint; **always present, even on failure** (assigned on receipt, before any write). Where the call writes a primary row, the same `rid` is persisted on it — `groups.rid`, `actions.rid`, `data_uploads.rid`, `model_update_requests.rid` — so the host can reconcile a response with server state. It additionally serves as the `/action` idempotency-replay handle (§2.2) and the key the monitoring algorithm polls in `model_update_requests` for `/update` (§2.4, §5.6). |
+
+Each endpoint adds its own fields on top (listed per endpoint below), so the
+response shape is the same whether the call succeeds or fails. **On failure, a
+field is `null` only when the failure makes its value unknown or meaningless;
+every value the API still knows is echoed as its real value.** Concretely:
+
+- the per-call `rid` the API always assigns is **never** `null`, on success or
+  failure and on every endpoint;
+- request fields that parsed and validated (e.g. a `group_id` that is a real
+  registered dyad) are echoed as sent;
+- only fields the failure prevents from being produced are `null` — e.g.
+  `action` / `action_prob` when no decision could be made, or the one field that
+  was malformed.
+
+The host must not read the `null` fields; each endpoint's error table gives the
+recommended action. Example failure envelope (`/action`, `409` — the request is
+well-formed and the dyad is valid, so the identifiers and per-call `rid` are
+echoed; only the un-producible decision outputs are `null`):
+
+```json
+{
+  "status": 409,
+  "title": "No State Available",
+  "message": "No /upload_data has been received for dyad_007; send a snapshot first.",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
 
 ### 2.1 `POST /api/v1/register_group` — register a dyad
 
@@ -54,39 +103,107 @@ Request body (example):
 }
 ```
 
-Response `201`:
+Response — common envelope plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `group_id` | string | echo of the registered dyad |
+| `member_list` | list | members recorded at first registration |
+| `consent_start_date` | `YYYY-MM-DD` | echo (may have been updated on re-registration) |
+| `consent_end_date` | `YYYY-MM-DD` | echo |
+
+(The always-present per-call `rid` — persisted on the `groups` row, §5.1 — is
+part of the common envelope; see the §2 preamble.)
 
 ```json
 {
-  "status": "success",
+  "status": 201,
+  "title": "Success",
   "message": "Group registered successfully.",
-  "group_id": "dyad_007"
+  "server_timestamp": "2026-05-25T14:03:12",
+  "group_id": "dyad_007",
+  "member_list": ["cp_007", "aya_007"],
+  "consent_start_date": "2026-05-25",
+  "consent_end_date": "2026-09-02",
+  "rid": "xxxx"
 }
 ```
 
-The canonical path is `/api/v1/register_group`. The former name
-`/api/v1/add_group` is retained as a **deprecated alias** mapping to the same
-handler, so existing host integrations keep working; new callers should use
-`/register_group`.
+**Path alias.** The canonical path is `/api/v1/register_group`; the former
+`/api/v1/add_group` is retained as a **deprecated alias** to the same handler.
+New callers should use `/register_group`.
 
-**Re-registration with an existing `group_id` is an update, not an error.** When
-`/register_group` is called for a `group_id` that is already registered, the API
-overwrites that dyad's `consent_start_date` and `consent_end_date` from the
-request body and returns `201` with `message: "Group consent window updated."`
-(idempotent upsert). The `member_list` in the repeat request is **ignored** —
-the members recorded at first registration stand. Re-registration is therefore
-the supported mechanism for correcting a dyad's active window.
+**Re-registration is an idempotent upsert of the consent window only.**
+Registering an existing `group_id` overwrites that dyad's
+`consent_start_date` / `consent_end_date` from the request body and returns
+`201` with `message: "Group consent window updated."`. This is the supported
+way to correct a dyad's active window.
 
-**Error responses.** Registration is one-time and off the real-time decision
-path; the guiding principle is "never lose a recruitable dyad."
+A re-registration whose `member_list` **matches** the first registration (or
+repeats it verbatim) is accepted; the first-registration members stand. A
+re-registration whose `member_list` **differs** from the recorded members is
+**rejected** with `409 Member Mismatch` (see the error table) rather than
+silently ignored — changing a dyad's membership after enrollment is not
+supported through this endpoint, and a silent no-op would let the host believe
+a correction took effect when it did not.
 
-- `400` — a required field is missing or malformed. No partial row is
-  written; correct and re-submit. (An existing `group_id` is **not** a `400`;
-  it is the consent-window upsert described above.)
-- `500` / `503` — database write failure. Safe to retry with backoff: the
-  request writes exactly one row and has no other side effects. Registration
-  may run any time before the dyad's first decision (§3), so a transient
-  outage never affects an in-flight intervention.
+**Errors** (guiding principle — never lose a recruitable dyad; registration is
+off the real-time path, so a transient outage never affects an in-flight
+intervention):
+
+| `status` | `title` | Cause | Host action |
+|---|---|---|---|
+| `400` | `Invalid Parameter` | required field missing or malformed | no partial row written; correct and re-submit |
+| `409` | `Member Mismatch` | re-registration with a `member_list` differing from the recorded members | membership is fixed at first registration; do not attempt to change it here |
+| `503` | `Service Unavailable` | database write failure | safe to retry with backoff (writes exactly one row, no other side effects) |
+
+Error examples. `rid` is always present; parsed fields are echoed; only
+a malformed field is `null`.
+
+```json
+// 400 — consent_start_date malformed (the other fields parsed, so they echo)
+{
+  "status": 400,
+  "title": "Invalid Parameter",
+  "message": "consent_start_date must be a Monday in YYYY-MM-DD format; got \"2026-05-26\" (Tuesday).",
+  "server_timestamp": "2026-05-25T14:03:12",
+  "group_id": "dyad_007",
+  "member_list": ["cp_007", "aya_007"],
+  "consent_start_date": null,
+  "consent_end_date": "2026-09-02",
+  "rid": "reg_000042"
+}
+```
+
+```json
+// 409 — re-registration changed the member_list (recorded members stand; the submitted list is echoed for diagnosis)
+{
+  "status": 409,
+  "title": "Member Mismatch",
+  "message": "group_id dyad_007 is already registered with members [cp_007, aya_007]; membership cannot be changed via /register_group.",
+  "server_timestamp": "2026-05-25T14:03:12",
+  "group_id": "dyad_007",
+  "member_list": ["cp_007", "aya_999"],
+  "consent_start_date": "2026-05-25",
+  "consent_end_date": "2026-09-02",
+  "rid": "reg_000042"
+}
+```
+
+```json
+// 503 — database write failure (all fields parsed; nothing is null)
+{
+  "status": 503,
+  "title": "Service Unavailable",
+  "message": "Database write failed; retry with backoff.",
+  "server_timestamp": "2026-05-25T14:03:12",
+  "group_id": "dyad_007",
+  "member_list": ["cp_007", "aya_007"],
+  "consent_start_date": "2026-05-25",
+  "consent_end_date": "2026-09-02",
+  "rid": "reg_000042"
+}
+```
 
 ### 2.2 `POST /api/v1/action` — request an action
 
@@ -119,54 +236,157 @@ Request body (example):
 }
 ```
 
-Response `201`:
+Response — common envelope plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `group_id` | string | echo of the requested dyad |
+| `decision_type` | string | echo |
+| `decision_idx` | int | echo |
+| `action` | int | chosen action: `0` = do not send / game off, `1` = send / game on. `null` on failure (no decision made). |
+| `action_prob` | float | **Pr(action = 1)** — the probability the learner assigned to `action = 1`, regardless of which action was chosen (no conversion needed). Always `0.5` during warm-up; `null` on failure. |
+| `warmup` | bool | `true` if a pure `Bernoulli(0.5)` draw (learner bypassed); surfaced for logging only — the host need not act on it. `null` on failure. |
+| `state` | list[float] | the state/feature vector `φ(s, a)` the learner scored to produce `action_prob` (echoes `actions.state`, §5.2). Returned so the host can replay the exact decision function. `null` on failure. |
+| `model_theta` | list[float] | the model parameter vector `θ` in effect at decision time (the `theta` of the `model_parameters` row referenced by `actions.model_parameters_id`, §5.2, §5.5). With `state`, this lets the host recompute `action_prob` by calling the decision function directly. `null` on warm-up (no learner was used) and on failure. |
 
 ```json
 {
-  "status": "success",
+  "status": 201,
+  "title": "Success",
   "message": "Action requested successfully.",
+  "server_timestamp": "2026-06-10T07:30:01",
   "group_id": "dyad_007",
+  "decision_type": "aya_message",
+  "decision_idx": 29,
   "action": 1,
   "action_prob": 0.65,
   "rid": "a1b2c3d4",
-  "timestamp": "2026-06-10T07:30:01",
-  "warmup": false
+  "warmup": false,
+  "state": [1.0, 1.0, 0.0, 0.6, 1.0, 0.4, 0.0, 0.6, 0.0, 0.4],
+  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17, -0.03, 0.09]
 }
 ```
 
-- `action` ∈ {0 (do not send / game off), 1 (send / game on)}.
-- `action_prob` is **Pr(chosen action)**, not Pr(action = 1). Analysis code must convert:
-  `pi1 = action_prob if action == 1 else 1 - action_prob`. During warm-up `action_prob`
-  is always `0.5`.
-- `rid` — unique id for this action; the host should retain it for reference.
-- `warmup` — `true` if this decision was a pure `Bernoulli(0.5)` draw (the learner was
-  bypassed); `false` if the learner produced it. Warm-up is managed entirely by the
-  API — the host does not need to act on this flag; it is surfaced for logging only.
-**Idempotency key:** `(group_id, decision_type, decision_idx)`. Each of the three agents
-(`aya_message`, `cp_message`, `dyad_game`) has its own per-dyad counter, so the same
-`decision_idx` value can legitimately appear once per `decision_type` for the same dyad.
+**Idempotency key:** `(group_id, decision_type, decision_idx)`. Each agent has
+its own per-dyad counter, so the same `decision_idx` may appear once per
+`decision_type` for a dyad.
 
-**Error responses.** `/action` is the only hard-real-time endpoint — the host
-is about to act — so a decision must never be lost to an error. Whenever the
-host cannot get a usable response at decision time, the recommended local
-fallback is always the same: **draw `Bernoulli(0.5)` yourself and record
-`action_prob = 0.5`**.
+**A repeated triple replays the original decision — it is not an error.** If
+the host re-sends an `/action` for a triple that already has a committed
+decision (e.g. the first response was lost to a timeout and the host retried),
+the API returns `200` with `title: "Duplicate Decision"` and the **originally
+minted** `action`, `action_prob`, `rid`, `warmup`, `state`, and `model_theta`
+— never a freshly drawn action. This makes `/action` safe to retry: a lost
+response can never cause the server and the host to disagree about which action
+was taken, and no second action is minted. The host should treat this `200`
+exactly like a `201` success and use the returned action.
 
-- `400` — duplicate `(group_id, decision_type, decision_idx)`. The triple is
-  the idempotency key: a repeat is rejected outright, so a duplicate
-  submission never mints a second action.
-- `400` — malformed request envelope (missing or type-invalid field).
-  Correct and re-send.
-- `404` — `group_id` not registered, or model parameters not initialized.
-  Apply the local fallback for this decision and fix the registration /
-  deployment before the next one.
-- `409` — no `/upload_data` has ever been received for this dyad, so the API
-  has no values to construct a state. Send the first snapshot before the
-  first `/action`; if a decision is due right now, apply the local fallback.
-- `500` — internal error, including a failure inside the learner. Apply the
-  local fallback. **[planned — tracked in `IMPLEMENTATION_TODO.md`: the API
-  will instead return `200` with a randomized `action` and
-  `action_prob = 0.5`, so the host proceeds as with any normal response.]**
+```json
+// 200 — replay of an already-committed decision (original outputs echoed verbatim)
+{
+  "status": 200,
+  "title": "Duplicate Decision",
+  "message": "Returning the existing action for (dyad_007, aya_message, 29).",
+  "server_timestamp": "2026-06-10T07:30:05",
+  "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
+  "action": 1,
+  "action_prob": 0.65,
+  "rid": "a1b2c3d4",
+  "warmup": false,
+  "state": [1.0, 1.0, 0.0, 0.6, 1.0, 0.4, 0.0, 0.6, 0.0, 0.4],
+  "model_theta": [0.12, 0.34, -0.05, 0.21, 0.02, -0.11, 0.08, 0.17, -0.03, 0.09]
+}
+```
+
+**Errors.** `/action` is the only hard-real-time endpoint, so a decision must
+never be lost. On **any** failure the host applies the same **local fallback**:
+draw `Bernoulli(0.5)` itself and record `action_prob = 0.5` (it does not read the
+`null` action fields).
+
+(A repeat of the idempotency triple is **not** listed here — it is a `200`
+replay of the original decision, described above, not a failure.)
+
+| `status` | `title` | Cause | Beyond the local fallback |
+|---|---|---|---|
+| `400` | `Invalid Parameter` | missing / type-invalid field (named in `message`) | correct and re-send |
+| `404` | `Unknown Group` | `group_id` not registered | fix the registration before the next decision |
+| `409` | `No State Available` | no `/upload_data` yet for this dyad | send the first snapshot before the next `/action` |
+| `500` | `Internal Error` | learner or other internal failure (incl. sample buffer unavailable) | infrastructure alert raised |
+| `503` | `Model Not Initialized` | the learner/model is not yet loaded or deployed (ops/deployment issue, not a host input error) | raise a deployment alert; not host-fixable |
+
+Error examples. `rid` is always present; valid request identifiers are echoed;
+only the un-producible decision outputs (`action`, `action_prob`, `warmup`) and
+any field that is itself the cause of failure are `null`.
+
+```json
+// 400 — malformed field (decision_type is the offender, so it is null; the rest echo)
+{
+  "status": 400,
+  "title": "Invalid Parameter",
+  "message": "decision_type must be one of aya_message / cp_message / dyad_game; got \"aya_msg\".",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": "dyad_007", "decision_type": null, "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
+
+```json
+// 404 — group_id not a registered dyad (so it is null; the rest of the request echoes)
+{
+  "status": 404,
+  "title": "Unknown Group",
+  "message": "group_id dyad_999 is not registered.",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": null, "decision_type": "aya_message", "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
+
+```json
+// 409 — no upload history yet (request valid; only the decision can't be produced)
+{
+  "status": 409,
+  "title": "No State Available",
+  "message": "No /upload_data has been received for dyad_007; send a snapshot first.",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
+
+```json
+// 500 — internal / learner failure (request fully valid; failure is server-side)
+{
+  "status": 500,
+  "title": "Internal Error",
+  "message": "Learner raised an exception while sampling the action.",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
+
+```json
+// 503 — model not yet initialized/deployed (request valid; ops-side failure, not host-fixable)
+{
+  "status": 503,
+  "title": "Model Not Initialized",
+  "message": "The learner for aya_message is not loaded; the deployment is not ready to serve decisions.",
+  "server_timestamp": "2026-06-10T07:30:01",
+  "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
+  "rid": "a1b2c3d4",
+  "action": null, "action_prob": null, "warmup": null,
+  "state": null, "model_theta": null
+}
+```
 
 ### 2.3 `POST /api/v1/upload_data` — provide a full snapshot of dyad data
 
@@ -176,27 +396,22 @@ to know which variables the learner uses as context and which as outcome.
 There is also **no** `decision_type` or `decision_idx` — each upload is a
 flat "current state of the dyad" snapshot, not tied to a particular decision.
 
-**Upload schedule.** The host calls `/upload_data` **immediately before
-every `/action`** — exactly one upload per `/action` call, in the same
-sequence the decisions are delivered.
+<a id="upload-schedule"></a>**Upload schedule.** The host calls `/upload_data`
+**exactly once immediately before every `/action`**, in decision order. Each
+day's uploads (each paired with the `/action` it precedes):
 
-- **Monday morning** (3 uploads, run sequentially): pre-`dyad_game` upload →
-  `POST /action dyad_game` (returns the week's game action $a^{(g)}$); then
-  pre-AYA-AM upload → `POST /action aya_message`; then pre-CP upload →
-  `POST /action cp_message`.
-- **Tuesday–Saturday morning** (2 uploads, run sequentially): pre-AYA-AM
-  upload → `POST /action aya_message`; then pre-CP upload →
-  `POST /action cp_message`.
-- **Every evening except Sunday** (1 upload): pre-AYA-PM upload →
-  `POST /action aya_message`.
+| Day | Uploads, in order | Count |
+|---|---|---|
+| Monday | pre-`dyad_game` → pre-AYA-AM → pre-CP → pre-AYA-PM | 4 |
+| Tue–Sat | pre-AYA-AM → pre-CP → pre-AYA-PM | 3 |
+| Sunday | none | 0 |
 
-§4.1 specifies, for each variable, what value to send at each upload. For
-most variables the value is identical across the uploads of a single
-morning (the host's measurements don't change in minutes); the exceptions
-are `current_game_on` and `prior_game_action`, whose values depend on
-whether the Monday-morning `dyad_game` /action has happened yet (see §4.1).
-For brevity §4.1 refers to "AM upload value" (= the value at any morning
-upload, with Monday-morning exceptions noted) and "PM upload value".
+Within a single morning most fields carry the same value (measurements don't
+change in minutes); the exceptions are `current_game_on` and
+`prior_game_action`, which depend on whether the Monday `dyad_game` /action has
+run yet (§4.1). §4.1 therefore states an **AM upload value** (any morning
+upload, with Monday exceptions noted) and a **PM upload value** (the pre-AYA-PM
+upload) per field.
 
 Request:
 
@@ -241,30 +456,71 @@ Request body (example — the pre-AYA-AM snapshot on Wednesday of study week 3):
 }
 ```
 
-**Semantics:**
-- Every upload is a **full snapshot** — every field in §4.1 must be present.
-  A field whose underlying measurement is unavailable for this upload must
-  be sent as `"miss"` (or JSON `null`); it cannot simply be omitted.
-- The learner masks `"miss"` values via the shared missing-indicator
-  mechanism.
-- The host does not tag uploads as "this is for AYA" / "this is the outcome
-  of decision 12". The learner handles all such matching server-side at
-  `/action` time (latest-snapshot lookup) and `/update` time (timeline-based
-  reward derivation).
+Response — the common envelope only (no endpoint-specific fields; the
+always-present `rid` is persisted on the `data_uploads` row, §5.3):
 
-**Responses.** `201` on success. Uploads are the sole inputs to reward
-derivation, so no posted data should ever be silently lost — on any error,
-correct and re-send.
+```json
+{
+  "status": 201,
+  "title": "Success",
+  "message": "Snapshot accepted.",
+  "server_timestamp": "2026-06-10T07:25:01",
+  "rid": "u7f3c9a1"
+}
+```
 
-- `400` — missing key, unknown key, or type-invalid value (see §4.1 for the
-  accepted set). The snapshot is all-or-nothing: a field with no measurement
-  must be sent explicitly as `"miss"`. Correct and re-send.
-  **[planned — tracked in `IMPLEMENTATION_TODO.md`: rejected payloads will
-  additionally be preserved verbatim for post-trial analysis.]**
-- `404` — unknown `group_id`. Register the dyad, then re-send the upload.
-- `500` / `503` — database write failure. Safe to retry: uploads are
-  append-only, and a duplicate row is harmless (the latest-value lookup is
-  unchanged).
+**Semantics.** Every upload is all-or-nothing: a field with no measurement is
+sent as `"miss"` (or JSON `null`), never omitted, and the learner masks
+`"miss"` via the shared missing-indicator mechanism. The host never tags an
+upload's purpose — the learner does all matching server-side, at `/action` time
+(latest-snapshot lookup) and `/update` time (timeline-based reward derivation).
+
+**Errors** (guiding principle — uploads are the sole inputs to reward
+derivation, so never silently drop; on any error, correct and re-send):
+
+| `status` | `title` | Cause | Host action |
+|---|---|---|---|
+| `400` | `Invalid Parameter` | missing / unknown / type-invalid field (see §4.1 for the accepted set) | send the full snapshot with `"miss"` where needed; correct and re-send |
+| `404` | `Unknown Group` | unknown `group_id` | register the dyad, then re-send |
+| `503` | `Service Unavailable` | database write failure | safe to retry (append-only; a duplicate row is harmless) |
+
+Error examples (envelope only — `/upload_data` has no endpoint-specific fields):
+
+```json
+// 400 — a field failed validation
+{
+  "status": 400,
+  "title": "Invalid Parameter",
+  "message": "Field aya_diary_mood must be a number or \"miss\"; got \"n/a\".",
+  "server_timestamp": "2026-06-10T07:25:01",
+  "rid": "u7f3c9a1"
+}
+```
+
+```json
+// 404 — unknown group_id
+{
+  "status": 404,
+  "title": "Unknown Group",
+  "message": "group_id dyad_999 is not registered.",
+  "server_timestamp": "2026-06-10T07:25:01",
+  "rid": "u7f3c9a1"
+}
+```
+
+```json
+// 503 — database write failure
+{
+  "status": 503,
+  "title": "Service Unavailable",
+  "message": "Database write failed; retry.",
+  "server_timestamp": "2026-06-10T07:25:01",
+  "rid": "u7f3c9a1"
+}
+```
+
+> **[planned — `IMPLEMENTATION_TODO.md`]** rejected `400` payloads will be
+> preserved verbatim for post-trial analysis.
 
 ### 2.4 `POST /api/v1/update` — re-fit the model
 
@@ -291,16 +547,49 @@ Request body (example):
 }
 ```
 
-Immediate response `202`:
+Immediate response — the common envelope only (`202`, accepted; the fit then
+runs in a background thread). No endpoint-specific fields: the always-present
+`rid` (§2 preamble) **is** the update handle — it keys the
+`model_update_requests` row the monitoring algorithm polls (§5.6) and is
+retained for post-study analysis.
 
 ```json
 {
-  "status": "processing",
-  "update_id": "e999a61c-fb5c-4f01-9942-cb7dbe501013"
+  "status": 202,
+  "title": "Update Accepted",
+  "message": "Model update started.",
+  "server_timestamp": "2026-06-01T03:00:00",
+  "rid": "e999a61c-fb5c-4f01-9942-cb7dbe501013"
 }
 ```
 
-Behavior:
+This `202` only acknowledges that the fit *started*. A fit that fails *after*
+acceptance is reported via `model_update_requests.status = "failed"` (§5.6, §7.1),
+**not** in this response.
+
+**Errors.**
+
+| `status` | `title` | Cause | Host action |
+|---|---|---|---|
+| `503` | `Service Unavailable` | could not enqueue the update | retry |
+
+Error example. `rid` is still present (the API assigns it on receipt), but on a
+`503` the enqueue failed, so **no `model_update_requests` row was created** — this
+`rid` keys no row and the monitoring algorithm should simply retry rather than
+poll it:
+
+```json
+// 503 — could not start the update
+{
+  "status": 503,
+  "title": "Service Unavailable",
+  "message": "Could not start the update; retry.",
+  "server_timestamp": "2026-06-01T03:00:00",
+  "rid": "e999a61c-fb5c-4f01-9942-cb7dbe501013"
+}
+```
+
+Behavior once accepted:
 - Optionally backs up all tables to a timestamped zip before fitting (`BACKUP_DATABASE`).
 - Writes a pre-update reproducibility snapshot (copy of `data_uploads`, `actions`, `groups`).
 - For every `actions` row not yet paired, walks forward on the `data_uploads`
@@ -456,20 +745,8 @@ vs. outcome — it simply sends the latest measured value of each at every
 upload. The learner consults a fixed subset of these fields at `/action` and
 `/update` time; which subset is internal to the API.
 
-**Upload events.** The host calls `/upload_data` **once before every
-`/action` call** (see §2.3 for the per-day schedule). The number of
-uploads per day is:
-
-- **Monday:** 4 uploads — pre-`dyad_game`, pre-AYA-AM, pre-CP, pre-AYA-PM
-  (in that order).
-- **Tuesday–Saturday:** 3 uploads — pre-AYA-AM, pre-CP, pre-AYA-PM.
-- **Sunday:** 0 uploads (no `/action` calls on Sunday).
-
-For brevity, "AM upload value" below means the value at any morning upload
-on a given day (the pre-`dyad_game`, pre-AYA-AM, and pre-CP uploads
-typically carry the same value for a given field; exceptions for
-`current_game_on` and `prior_game_action` are called out explicitly).
-"PM upload value" means the value at the pre-AYA-PM upload.
+The per-day upload schedule and the **AM upload value** / **PM upload value**
+convention used below are defined once in [§2.3](#upload-schedule).
 
 For variables measured on a weekly cadence (relationship-quality survey),
 the host caches the most recent value and re-sends it on every upload until
@@ -806,6 +1083,7 @@ One row per dyad. Written by `/register_group`.
 | Column | Type | Notes |
 |---|---|---|
 | `group_id` | string (unique) | host-supplied dyad identifier |
+| `rid` | string | per-call id returned by the most recent `/register_group` for this dyad (updated on idempotent re-registration); lets the host reconcile a registration response with the stored row |
 | `group_info` | JSON | `{member_list, consent_start_date, consent_end_date}` |
 | `created_at` | datetime | row creation timestamp |
 
@@ -823,7 +1101,7 @@ so the action can be replayed deterministically.
 | `raw_context` | JSON | the per-agent context used at decision time — projected at action time from the dyad's latest values in `data_uploads`. Recorded explicitly so the decision is reproducible even if later uploads overwrite individual fields. |
 | `state` | JSON | the feature vector `phi(s, a)` fed to the learner |
 | `action` | int | chosen action ∈ {0, 1} |
-| `action_prob` | float | Pr(chosen action), not Pr(action = 1); always `0.5` on warm-up rows |
+| `action_prob` | float | Pr(action = 1), regardless of the chosen action; always `0.5` on warm-up rows |
 | `is_warmup` | bool | `true` if this decision was a `Bernoulli(0.5)` warm-up draw (learner bypassed), per §2.2 |
 | `warmup_reason` | string (nullable) | `cohort` / `week1` on warm-up rows; `NULL` otherwise |
 | `random_state` | JSON | sample-buffer cursor positions for this draw (for replay) |
@@ -844,6 +1122,7 @@ outcomes.
 
 | Column | Type | Notes |
 |---|---|---|
+| `rid` | string (unique) | per-call `rid` returned by the `/upload_data` response that wrote this row |
 | `group_id` | string | FK-by-value to `groups.group_id` |
 | `data` | JSON | the flat `data` dict as posted; every key in §4.1 is present |
 | `request_timestamp` | datetime | timestamp on the `/upload_data` request |
@@ -913,7 +1192,7 @@ reading `status` and `completed_at` here; the API does not POST anywhere.
 
 | Column | Type | Notes |
 |---|---|---|
-| `update_id` | string | UUID returned in the 202 response |
+| `rid` | string (unique) | per-call `rid` returned in the `202` response; the key the monitoring algorithm polls |
 | `status` | string | `processing` / `completed` / `failed` |
 | `request_timestamp` | datetime | from the `/update` payload |
 | `created_at` | datetime | row creation timestamp |
@@ -957,14 +1236,14 @@ Unique constraint: `(group_id, decision_type, variable_name)`.
 
 Pointers to on-disk full copies of `data_uploads`, `actions`, and `groups`
 taken immediately before each `/update` completes. The actual data lives on
-disk under `repro_snapshots/<update_id>/`; this table is the index. Consumed
+disk under `repro_snapshots/<rid>/`; this table is the index. Consumed
 by `tools/reproduce_run.py` to replay a study. (`study_data` is itself
 derived during `/update`, so the snapshot copies the upstream
 `data_uploads`.)
 
 | Column | Type | Notes |
 |---|---|---|
-| `update_id` | string | matches `model_update_requests.update_id` |
+| `rid` | string | the `/update` call's `rid`; matches `model_update_requests.rid` |
 | `model_parameters_id` | int (nullable) | the `model_parameters` row produced by this update |
 | `snapshot_dir` | string | absolute or repo-relative path to the on-disk snapshot |
 | `data_uploads_count` | int | row count at snapshot time |
@@ -1010,32 +1289,20 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
   actions paired with host uploads).
 - See `ADAPTS-HCT-RL-API/Possible_System_Failure.md` for the full failure-mode catalog.
 
-### 7.1 Per-endpoint server-side fallback (summary)
+### 7.1 Asynchronous `/update` fit outcomes
 
-Each endpoint's error handling is detailed inline in §2; this table
-consolidates the "what happens on failure" view. Guiding principle by
-endpoint: `/register_group` — never lose a recruitable dyad; `/action` — always return
-a safe action, never "no decision"; `/upload_data` — preserve every byte, never
-silently drop; `/update` — never publish a bad policy, keep the last good one.
+Request-level (synchronous) errors for all four endpoints are in their §2 error
+tables. Because `/update` returns `202` *before* fitting, its fit outcomes are
+reported only through `model_update_requests` (§5.6) — never in the HTTP
+response. Guiding principle: `/update` never publishes a bad policy; it keeps the
+last good parameters.
 
-| Endpoint | Failure | Behavior & recommended host action |
-|---|---|---|
-| `/register_group` | duplicate `group_id` | `201` — consent-window upsert, not an error |
-| `/register_group` | missing/invalid field | `400` — no partial row; correct and re-submit |
-| `/register_group` | DB write failure | `500` / `503` — safe to retry with backoff |
-| `/action` | internal learner failure | today `404`/`500` — host decides locally (`Bernoulli(0.5)`, `action_prob = 0.5`); **[planned]** `200` with randomized `action`, `action_prob = 0.5` |
-| `/action` | no upload history | `409` — host decides locally (`Bernoulli(0.5)`, `action_prob = 0.5`) |
-| `/action` | duplicate decision triple | `400` — no second action minted |
-| `/action` | unregistered `group_id` | `404` — host decides locally and fixes the registration |
-| `/action` | sample buffer unavailable | `200` with `action_prob = 0.5`; infrastructure alert raised |
-| `/upload_data` | malformed/schema-invalid payload | `400` — correct and re-send; **[planned]** payload preserved verbatim for post-trial analysis |
-| `/upload_data` | missing key | `400` — full snapshot required; send `"miss"` explicitly |
-| `/upload_data` | unknown `group_id` | `404` — register the dyad, then re-send |
-| `/upload_data` | DB write failure | `500` / `503` — safe to retry (append-only) |
-| `/update` | sanity-gate failure | fit not published; previous parameters stay active; request marked `failed` |
-| `/update` | empty batch | fit skipped; previous parameters stay active; request marked `completed` |
-| `/update` | per-action reward-derivation error | that action skipped (`reward = NULL`); the rest derived |
-| `/update` | background-thread crash / timeout | request stays `processing`; monitoring re-triggers; previous parameters stay active |
+| Fit outcome | Effect |
+|---|---|
+| sanity-gate failure | fit not published; previous parameters stay active; request marked `failed` |
+| empty batch | fit skipped; previous parameters stay active; request marked `completed` |
+| per-action reward-derivation error | that action skipped (`reward = NULL`); the rest derived |
+| background-thread crash / timeout | request stays `processing`; monitoring re-triggers; previous parameters stay active |
 
 ---
 
