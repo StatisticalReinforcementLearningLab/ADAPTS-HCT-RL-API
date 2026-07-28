@@ -1,5 +1,9 @@
 # Algorithm Monitoring
 
+Note: Don't overwhelm human. Don't send tons of emails. But we do need send emails for serious issues. Maybe get a weekly update (for low severity issues). Some high severity should be sent ASAS.
+
+----
+
 This document describes the algorithm-monitoring layer for the ADAPTS-HCT RL service. It is a clean-Markdown rendering of the "Algorithm Monitoring" and "Database Schema" sections of the authoritative design doc (`Overleaf/Algorithm_Design/main.tex`, §Algorithm Monitoring and §Database Schema).
 
 The RL service produces an auditable per-decision and per-update event stream. *Algorithm monitoring* is the layer that turns that stream into actionable alerts when the running algorithm deviates from its specified behavior.

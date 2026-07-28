@@ -160,6 +160,7 @@ intervention):
 Error examples. `rid` is always present; parsed fields are echoed; only
 a malformed field is `null`.
 
+[TODO: does not need to be Tuesday]
 ```json
 // 400 — consent_start_date malformed (the other fields parsed, so they echo)
 {
@@ -353,7 +354,7 @@ any field that is itself the cause of failure are `null`.
   "state": null, "model_param": null
 }
 ```
-
+[TODO: we still want to generate a decision when there is no data upload.]
 ```json
 // 409 — no upload history yet (request valid; only the decision can't be produced)
 {
