@@ -17,6 +17,11 @@ The contract from the host's perspective:
    endpoint-specific fields are added on top. On failure a field is `null` only
    when the failure makes its value unknown — everything the API still knows
    (valid identifiers, per-call ids like `rid`) is echoed. See the §2 preamble.
+5. **Alarms are pulled, not pushed.** A monitoring algorithm runs on the API
+   server and raises alarms; the host collects them by polling
+   `/monitor/alarms` (read-only, once daily). The API does not POST them to the
+   host, and the individual monitoring items are documented outside this
+   contract. See §2.5.
 
 ---
 
@@ -41,11 +46,11 @@ failure, regardless of failure type. Five fields are always present:
 
 | Field | Type | Notes |
 |---|---|---|
-| `status` | int | HTTP status code, echoed in the body (equals the response's HTTP status, so a client may branch on either). Success: `201` (`202` for `/update`; `200` for an idempotent `/action` replay, §2.2). Client errors: `400`, `404`, `409`. Server errors: `500`, `503`. |
+| `status` | int | HTTP status code, echoed in the body (equals the response's HTTP status, so a client may branch on either). Success: `201` (`202` for `/update`; `200` for an idempotent `/action` replay, §2.2; `200` for the read-only `/monitor/alarms` pull, §2.5). Client errors: `400`, `404`, `409`. Server errors: `500`, `503`. |
 | `title` | string | stable outcome label, e.g. `"Success"`, `"Invalid Parameter"`, `"Unknown Group"`, `"No State Available"`, `"Duplicate Decision"`, `"Internal Error"`, `"Service Unavailable"`; distinguishes failures that share one HTTP code |
 | `message` | string | human-readable detail, e.g. `"decision_type must be one of aya_message / cp_message / dyad_game."` |
 | `server_timestamp` | ISO-8601 string | server time the response was produced. Named distinctly from the request-body `timestamp` (the host's decision/upload time) to avoid the request/response key collision. |
-| `rid` | string | per-call request id the API assigns to **every** call on **every** endpoint; **always present, even on failure** (assigned on receipt, before any write). Where the call writes a primary row, the same `rid` is persisted on it — `groups.rid`, `actions.rid`, `data_uploads.rid`, `model_update_requests.rid` — so the host can reconcile a response with server state. It additionally serves as the `/action` idempotency-replay handle (§2.2) and the key the monitoring algorithm polls in `model_update_requests` for `/update` (§2.4, §5.6). |
+| `rid` | string | per-call request id the API assigns to **every** call on **every** endpoint; **always present, even on failure** (assigned on receipt, before any write). Where the call writes a primary row, the same `rid` is persisted on it — `groups.rid`, `actions.rid`, `data_uploads.rid`, `model_update_requests.rid`, `monitor_pulls.rid` — so the host can reconcile a response with server state. It additionally serves as the `/action` idempotency-replay handle (§2.2) and the key the monitoring algorithm polls in `model_update_requests` for `/update` (§2.4, §5.6). |
 
 Each endpoint adds its own fields on top (listed per endpoint below), so the
 response shape is the same whether the call succeeds or fails. **On failure, a
@@ -608,7 +613,143 @@ Behavior once accepted:
 - On completion, sets `model_update_requests.status` to `completed` (and
   stamps `completed_at`) or `failed` (and stamps `error_message`).
 
+### 2.5 `GET /api/v1/monitor/alarms` — collect alarms raised on the API server
 
+A **monitoring algorithm runs on the API server** alongside the four endpoints
+above. It watches the API's own event stream and raises an **alarm** whenever a
+monitoring item fires. This endpoint is how the host **collects** those alarms,
+so the app-server developer can view the API-side alarms together with the
+host's own.
+
+The individual monitoring items — what each one checks, its threshold, and its
+cadence — are **not part of this contract** and are documented separately
+(`Overleaf/Monitoring_Algorithm/`). This endpoint is deliberately
+item-agnostic: each alarm carries an opaque `item_id`, and the host **stores
+and displays it without branching on it**. New items can therefore be added,
+retired, or re-thresholded during the trial with no host-side change. The one
+field the host may branch on is `severity`.
+
+**Three properties distinguish this endpoint from §2.1–2.4.**
+
+1. **Read-only and `GET`.** It writes no study state, takes query parameters
+   rather than a JSON body, and returns `200` (not `201`) on success. It is
+   safe to call at any time, any number of times.
+2. **Not dyad-scoped.** One call returns every alarm the monitoring algorithm
+   raised in the window, across all dyads and all three agents. There is no
+   per-dyad or per-agent request parameter.
+3. **Off the real-time path.** No decision depends on it. A failed pull is
+   retried on the next cycle; it never triggers the `/action` local fallback.
+
+**Path.** The monitoring design doc refers to this feed as
+`GET /api/v1/monitor/events`; `/api/v1/monitor/alarms` is the canonical path
+and the two denote the same records.
+
+Request — one optional query parameter:
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `since` | ISO-8601 | return alarms raised **after** this time. Omitted ⇒ `server_timestamp − 24 h`, i.e. the plain call collects the past day. |
+
+Request (example — the daily poll, and the same call with an explicit start):
+
+```
+GET /api/v1/monitor/alarms
+GET /api/v1/monitor/alarms?since=2026-06-09T06:00:00
+```
+
+Response — common envelope plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `count` | int | number of records in `alarms`; `0` is a normal, healthy answer. `null` on failure. |
+| `alarms` | list[object] | the alarm records. `[]` when nothing fired; `null` on failure. |
+
+Each element of `alarms`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `event_id` | string | stable identity of this alarm. The host stores it so a re-pull over an overlapping window does not double-count. |
+| `item_id` | string | opaque identifier of the monitoring item that fired. Enumerated outside this document; the host records and displays it but does not interpret or branch on it. |
+| `severity` | string | `red` / `yellow` / `green`. The only field the host branches on. |
+| `message` | string | human-readable summary, suitable for direct display. Wording may change between releases; never parse it. |
+| `detail` | object | free-form, item-specific context (measured value, threshold, affected dyads). **Opaque to the host** — stored and displayed verbatim, not interpreted. Carries no participant data. May be `{}`. |
+
+```json
+{
+  "status": 200,
+  "title": "Success",
+  "message": "Returning 2 alarms.",
+  "server_timestamp": "2026-06-10T06:00:02",
+  "rid": "m3d81f0a",
+  "count": 2,
+  "alarms": [
+    {
+      "event_id": "3f2a9c14-7b0e-4d51-9a62-0c8e5b1d7f34",
+      "item_id": "XX-000",
+      "severity": "yellow",
+      "message": "Monitoring item XX-000 fired for dyad_007 (4 occurrences).",
+      "detail": {"value": 0.23, "threshold": 0.2, "window": "24h"}
+    },
+    {
+      "event_id": "8c41d0b7-52aa-4f19-b3c7-6e2f90a4d115",
+      "item_id": "YY-000",
+      "severity": "red",
+      "message": "Monitoring item YY-000 fired for cp_message.",
+      "detail": {}
+    }
+  ]
+}
+```
+
+(`item_id` values are placeholders here. The real identifiers, and what each
+one means, live in the monitoring documentation — this document deliberately
+does not enumerate them.)
+
+**Errors** (guiding principle — the alarm feed is diagnostic, never on the
+real-time path; a failed pull is simply retried on the next cycle, and no
+alarm is lost because the feed is a window over persisted state rather than a
+queue that drains):
+
+| `status` | `title` | Cause | Host action |
+|---|---|---|---|
+| `400` | `Invalid Parameter` | `since` is not a parseable ISO-8601 timestamp | correct and re-send |
+| `503` | `Service Unavailable` | monitoring store unreadable | safe to retry with backoff (read-only) |
+
+Error examples. `rid` is always present; only the un-producible results are
+`null`.
+
+```json
+// 400 — since is not parseable (no window could be applied)
+{
+  "status": 400,
+  "title": "Invalid Parameter",
+  "message": "since must be an ISO-8601 timestamp; got \"yesterday\".",
+  "server_timestamp": "2026-06-10T06:00:02",
+  "rid": "m3d81f0a",
+  "count": null,
+  "alarms": null
+}
+```
+
+```json
+// 503 — monitoring store unreadable (request valid; nothing was produced)
+{
+  "status": 503,
+  "title": "Service Unavailable",
+  "message": "Monitoring store unavailable; retry with backoff.",
+  "server_timestamp": "2026-06-10T06:00:02",
+  "rid": "m3d81f0a",
+  "count": null,
+  "alarms": null
+}
+```
+
+**A successful pull returning zero alarms is the healthy case, and is not the
+same as no pull.** `count: 0` means the monitoring algorithm ran and raised
+nothing; a failed or skipped pull means the host learned nothing either way.
+The host should therefore treat *the absence of a successful daily pull* — not
+an empty result — as the condition worth surfacing to the developer. The API
+records every pull (§5.11), so the same gap is visible from the RL side.
 
 ---
 
@@ -646,6 +787,14 @@ overlapping active windows).
 fit runs in a background thread; the monitoring algorithm watches
 `model_update_requests` for completion (§2.4). Must finish before 06:00,
 when the first `/action` of the week is requested.
+
+**Daily cron — 06:00** (alarm collection; not dyad-scoped). Host GETs
+`/monitor/alarms` and records the returned alarms, keyed by `event_id`, in the
+developer-facing view (§2.5). One call covers all dyads and all three agents.
+With `since` omitted the call collects the past 24 h, which matches a daily
+cadence; a host recovering from a gap passes its last successful pull time as
+`since`. The time of day is arbitrary — nothing downstream depends on it — but
+a fixed daily slot makes a missed pull visible.
 
 **Weekly cron — Monday 06:00** (`dyad_game` decision; once per week).
 
@@ -747,6 +896,8 @@ sent as `0.0`. `current_game_on` is `"miss"` until the Monday 06:00
 ---
 
 ## 4. Data field dictionary
+
+[ZX: We plan to use only a subset of this list. Tell Pei-yao what we plan to use.]
 
 `/upload_data` carries a **full snapshot** of every variable listed in §4.1.
 The host does not need to know which variables the learner uses as context
@@ -974,7 +1125,7 @@ this equals `cp_diary_mood` whenever it is non-missing.
   else `0.0`.
 - *Missingness:* if `daily_diary_completed = false`, send `0.0` (the
   learner ignores it).
-
+[TODO: Delete this]
 #### Dyad-level
 
 **`relationship_quality_aya`** — `float_or_miss`. AYA's most recent
@@ -1074,12 +1225,16 @@ relationship score, used as the basis for the `dyad_game` reward.
 - *Missingness:* `0.0` whenever `weekly_survey_completed = false` (the
   learner ignores it).
 
+[TODO: add something about how active the users are in the game]
+
 ---
 
 ## 5. Persisted data model (API-internal)
 
 Authoritative source: `app/models.py`. The host does not write these directly; all
-mutations happen through the four endpoints in §2. `flask export-csv` dumps every
+mutations happen through the endpoints in §2 — except the two monitoring tables
+(§5.10–5.11), which the on-server monitoring algorithm writes and
+`/monitor/alarms` only reads. `flask export-csv` dumps every
 table to `exports/` for post-study analysis.
 
 Every table has a synthetic `id` integer primary key (autoincrement) which is omitted
@@ -1262,6 +1417,42 @@ derived during `/update`, so the snapshot copies the upstream
 | `total_bytes` | int | total snapshot size on disk |
 | `created_at` | datetime |  |
 
+### 5.10 `monitor_alarms`
+
+> **[planned]** Neither this table nor §5.11 exists in `app/models.py` yet;
+> both ship with the monitoring algorithm.
+
+One row per alarm raised by the on-server monitoring algorithm — the records
+`/monitor/alarms` serves (§2.5). Written by the monitoring layer, never by an
+endpoint. The monitoring layer may hold further per-alarm bookkeeping (scope,
+occurrence counts, lifecycle state, resolution notes) in its own tables; the
+columns below are those the host-facing feed reads.
+
+| Column | Type | Notes |
+|---|---|---|
+| `event_id` | string (unique) | stable alarm identity; the `/monitor/alarms` record key |
+| `item_id` | string | which monitoring item fired. The item catalogue is maintained outside this document; the API contract treats this as an opaque label. |
+| `severity` | string | `red` / `yellow` / `green`, after the monitoring layer's escalation rules |
+| `message` | string | human-readable summary served verbatim |
+| `detail` | JSON | item-specific context (value, threshold, affected dyads); carries no participant data |
+| `raised_at` | datetime | when the monitoring layer raised the alarm; the column the `since` window filters on (indexed) |
+| `created_at` | datetime | row creation timestamp |
+
+### 5.11 `monitor_pulls`
+
+One row per `/monitor/alarms` call, keyed by that call's `rid`. The pull is
+read-only with respect to study state; this row exists so the API side can see
+that the host is collecting — a gap in `monitor_pulls` is the API-side view of
+the missed-pull condition described in §2.5.
+
+| Column | Type | Notes |
+|---|---|---|
+| `rid` | string (unique) | per-call `rid` returned in the `/monitor/alarms` response |
+| `since` | datetime (nullable) | lower bound applied — the request's `since`, or the computed 24 h default; `NULL` if the request failed validation |
+| `returned_count` | int (nullable) | number of alarms returned; `NULL` on failure |
+| `status` | int | HTTP status returned |
+| `created_at` | datetime | row creation timestamp |
+
 ---
 
 ## 6. Reproducibility
@@ -1293,6 +1484,13 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
   picked up at the next `/update`.
 - **Missed `/update`.** The monitoring algorithm should re-ping if a
   scheduled update is missed; the API itself does not schedule.
+- **Missed alarm pull.** No alarm is lost: `/monitor/alarms` is a window over
+  persisted state (§5.10), not a queue that drains. A host that skips days
+  recovers the full backlog on its next call by sending its last successful
+  pull time as `since` (§2.5). The failure mode to guard against is the
+  *silent* one —
+  the host never pulling at all — which is why a successful pull returning
+  zero alarms is reported distinctly from no pull.
 - **API unreachable:** the host draws `Bernoulli(0.5)` locally for that
   decision and records `action_prob = 0.5`. The API has no record of such
   decisions, so they never enter model fits (the fit uses only API-issued
@@ -1301,7 +1499,7 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
 
 ### 7.1 Asynchronous `/update` fit outcomes
 
-Request-level (synchronous) errors for all four endpoints are in their §2 error
+Request-level (synchronous) errors for all five endpoints are in their §2 error
 tables. Because `/update` returns `202` *before* fitting, its fit outcomes are
 reported only through `model_update_requests` (§5.6) — never in the HTTP
 response. Guiding principle: `/update` never publishes a bad policy; it keeps the
@@ -1321,3 +1519,16 @@ last good parameters.
 1. **Scheduling robustness:** timezone/DST handling for per-dyad decision
    windows, and the guarantee that the weekly `/update` completes before the
    first `/action` of the week.
+2. **Authentication on `/monitor/alarms`.** The feed exposes cross-dyad
+   operational state and is the one endpoint whose *response* is worth reading
+   by an unauthorized caller. No shared-secret check is enforced on any
+   endpoint today; if one is added, this endpoint should be in scope.
+3. **Pull cadence and retention.** Daily is the assumed cadence (§3), and
+   `since` defaults to 24 h to match it. How long `monitor_alarms` rows are
+   retained — and therefore how far back a `since` can reach — is not yet
+   fixed. Nor is whether a very large window needs paging; the current contract
+   returns the whole window in one response.
+4. **Push option.** Only the pull direction is specified here. Whether red
+   alarms should additionally be pushed to a host-provided sink, rather than
+   waiting up to a day for the next pull, is a joint decision with the dev
+   team.

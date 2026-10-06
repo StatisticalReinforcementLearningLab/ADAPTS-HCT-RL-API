@@ -1,5 +1,14 @@
 # Algorithm Monitoring
 
+> **Superseded — retained for history.** This file mirrors an earlier draft written
+> against the pre-`API-Spec.md` contract (host-written `study_data`, duplicate
+> `decision_idx` as an error, `/update` callbacks, `empirical_bayes_snapshots`).
+> The current design is **`Overleaf/Monitoring_Algorithm/monitoring.tex`**. It
+> revises the checks for the flat-snapshot `/upload_data` and update-derived
+> `study_data`, adds the error-code ledger forwarded to the host app server,
+> and makes the monitoring algorithm the owner of the `/update` schedule. The
+> authoritative database schema is `API-Spec.md` §5, not §6 below.
+
 Note: Don't overwhelm human. Don't send tons of emails. But we do need send emails for serious issues. Maybe get a weekly update (for low severity issues). Some high severity should be sent ASAS.
 
 ----
