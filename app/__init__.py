@@ -5,7 +5,7 @@ import pickle
 import sys
 
 from flask import Flask, request
-from sqlalchemy import event
+from sqlalchemy import event, text
 from werkzeug.exceptions import HTTPException
 
 from app.extensions import db, migrate
@@ -132,6 +132,12 @@ def create_app(config_class="config.Config"):
     app.register_blueprint(data_blueprint, url_prefix="/api/v1")
     app.register_blueprint(update_blueprint, url_prefix="/api/v1")
 
+    @app.get("/healthz")
+    def healthz():
+        """Lightweight VM/container readiness check; never returns study data."""
+        db.session.execute(text("SELECT 1"))
+        return {"status": "ok"}, 200
+
     # Monitoring (Monitoring-Spec §2, §8): blueprint, CLI group, after-response
     # code logger. Deliberately unguarded: the API refuses to start if
     # monitoring cannot load (M1).
@@ -164,7 +170,12 @@ def create_app(config_class="config.Config"):
     with app.app_context():
         # Create tables for models
         db.create_all()
-        initialize_model_parameters(app)
+        # An older deployed schema may not yet have every column mapped by the
+        # current models.  Let ``flask db upgrade`` reach Alembic without
+        # querying those models first; normal application startup initializes
+        # and validates state after the migration has completed.
+        if cli_command != "db":
+            initialize_model_parameters(app)
         # Refuse to start if the resolved set differs from the frozen one
         # (C9 alarm first). Exempt CLI commands inspect or repair the set, or
         # only read the database, so they only warn (and raise no alarm).
@@ -184,7 +195,7 @@ def create_app(config_class="config.Config"):
         # Restore sampler cursor to the furthest recorded position so a server
         # restart resumes the stream where it stopped (rather than
         # re-consuming primitives that were already used).
-        if algo_name in SAMPLER_ALGORITHMS:
+        if cli_command != "db" and algo_name in SAMPLER_ALGORITHMS:
             _restore_sampler_cursor(app)
 
     # Register CLI commands

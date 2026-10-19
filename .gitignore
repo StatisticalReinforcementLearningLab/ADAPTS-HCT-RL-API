@@ -1,4 +1,5 @@
 .env
+.env.production
 logs/
 .vscode/
 __pycache__/

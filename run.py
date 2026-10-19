@@ -1,6 +1,8 @@
+import os
+
 from app import create_app
 
-app = create_app()
+app = create_app(os.getenv("APP_CONFIG", "config.Config"))
 
 if __name__ == "__main__":
     # Use 5001 on macOS; port 5000 is often used by AirPlay and returns 403

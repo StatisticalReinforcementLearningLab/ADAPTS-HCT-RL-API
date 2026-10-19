@@ -1,0 +1,74 @@
+services:
+  db:
+    image: postgres:17.2-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: adapts
+      POSTGRES_USER: adapts
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adapts -d adapts"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      APP_CONFIG: config.ProductionConfig
+      CLOCK_MODE: wall
+      RL_ALGORITHM: inf_lsvi_eb
+      SQLALCHEMY_DATABASE_URI: postgresql://adapts:${POSTGRES_PASSWORD}@db:5432/adapts
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - flask --app run:app db upgrade && exec gunicorn --bind=0.0.0.0:8000 --workers=1 --threads=1 --timeout=120 --access-logfile=- --error-logfile=- run:app
+    ports:
+      - "${ADAPTS_BIND_ADDRESS:-127.0.0.1}:${ADAPTS_PORT:-8000}:8000"
+    volumes:
+      - backups:/app/backups
+      - buffers:/app/buffers
+      - exports:/app/exports
+      - logs:/app/logs
+      - repro-snapshots:/app/repro_snapshots
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  monitor:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      APP_CONFIG: config.ProductionConfig
+      CLOCK_MODE: wall
+      RL_ALGORITHM: inf_lsvi_eb
+      SQLALCHEMY_DATABASE_URI: postgresql://adapts:${POSTGRES_PASSWORD}@db:5432/adapts
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["flask", "--app", "run:app", "monitor", "loop"]
+    volumes:
+      - backups:/app/backups
+      - buffers:/app/buffers
+      - exports:/app/exports
+      - logs:/app/logs
+      - repro-snapshots:/app/repro_snapshots
+
+volumes:
+  backups:
+  buffers:
+  exports:
+  logs:
+  postgres-data:
+  repro-snapshots:
