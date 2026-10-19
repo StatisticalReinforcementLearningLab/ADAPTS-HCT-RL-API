@@ -4,8 +4,11 @@ Tracked work items for the ADAPTS-HCT RL API. Each item lists the concrete code
 and doc changes, plus an acceptance check. Cross-references point at
 `API-Spec.md`.
 
-> **Status (items 1–2 DONE; items 3–4 open).** Items 1–2 implemented in `app/routes/group.py`, with
-> callers and docs updated; `pytest tests/` passes (72 tests). Notes:
+> **Status (2026-10-19).** API items 1–4 and 8 are implemented. Items 5–6 were
+> superseded by the finalized Monitoring Spec: legacy check IDs remain, and
+> alarm responses include `owner` and `raised_at`. Item 7 is a simulation and
+> manuscript rerun, not an API implementation item. The current full suite is
+> the acceptance source of truth. Notes:
 > - `/add_group` is kept as a **deprecated alias** (the optional transition
 >   alias), so the host contract is not broken. Both paths map to
 >   `group.register_group`.
@@ -92,55 +95,135 @@ the rename lands on already-correct behavior in a single sweep.
 
 ---
 
-## 3. `/action` learner-failure fallback (F-A2) — TODO
+## 3. `/action` learner-failure fallback (F-A2) — DONE
 
-**Why.** `API-Spec.md` §2.2 (server-side fallback) specifies that when the
-learner cannot produce a valid decision — corrupted or non-PSD posterior,
-feature-builder exception, missing week-1 standardization baseline, sampler
-error, or a cold-start race on `model_parameters` — `/action` must degrade to
-a buffer-drawn `Bernoulli(0.5)` with `action_prob = 0.5` rather than surface
-`404`/`500`. Today those paths return `404`/`500` and the host must fall back
-locally (F-A1).
-
-**Required changes:**
-
-- [ ] `app/models.py` + migration — add `actions.excluded_from_update`
-      (bool, default `FALSE`).
-- [ ] `app/routes/action.py` — wrap the `make_state` / `get_action` path in a
-      try/except; on failure draw `Bernoulli(0.5)` from the deterministic
-      sample buffer (`_draw_warmup_action`), persist the row with
-      `is_warmup = true` and `excluded_from_update = TRUE`, and return `200`
-      with `action_prob = 0.5`. Same handling for the
-      `model_parameters`-missing cold-start race.
-- [ ] `/update` — skip `excluded_from_update` rows when building the fit pool.
-- [ ] Tests — force a posterior/feature failure and assert `200`,
-      `action_prob == 0.5`, and that the row is excluded from the next fit.
-
-**Acceptance.** With a corrupted posterior injected, `/action` still returns a
-usable `(action, action_prob)`, the decision replays deterministically from
-the buffer cursor, and the next `/update` fit ignores the flagged row.
+Implemented by `app/routes/action.py`: no-state, no-policy, learner-error and
+invalid-probability cases return a persisted `201` decision using exactly one
+saved uniform, with `action_prob = 0.5`, `warmup = true`, and a machine-readable
+`warmup_reason`. Such a decision enters learning when both its design state and
+outcome are available. Route and monitoring tests cover every fallback cause,
+replay, buffer use, and the A13 invalid-probability gate.
 
 ---
 
-## 4. `/upload_data` preserve-rejected-payloads (F-U1) — TODO
+## 4. `/upload_data` preserve-rejected-payloads (F-U1) — DONE
 
-**Why.** `API-Spec.md` §2.3 (server-side fallback) requires rejected uploads
-(malformed / unknown-key / type-invalid) to be persisted verbatim with
-`excluded_from_update = TRUE` for post-trial analysis ("preserve every byte,
-never silently drop"). Today an invalid payload is rejected with `400` and
-nothing is persisted.
+Implemented with the separate access-controlled `upload_quarantine` table.
+Every rejected `400` body is stored byte-for-byte with its validation result,
+SHA-256 fingerprint and size; it never enters `data_uploads`, decisions,
+rewards, ordinary backups, logs, or alarms. The binary representation also
+preserves malformed non-UTF-8 requests exactly.
+
+---
+
+## 5. Consistent ID format for monitoring checks and error codes — NOT ADOPTED
+
+**Why.** `Monitoring-Spec.md` uses two ID schemes side by side: monitoring
+checks carry short legacy IDs (`A13`, `C7`, `L2`, ...) while endpoint errors
+carry structured codes (`AC-409-NOSTATE`, `UP-500-...`; §6.1). The two look
+unrelated in alarm feeds and in `GET /monitor/alarms` (`code` field, §8.1).
+Give checks the same `<endpoint>-<kind>-<short name>` shape, e.g.
+`A13` → `AC-13-RANGE` (π out of range on `/action`).
+
+**Proposed format.**
+
+```
+CHECK = <endpoint prefix>-<check number>-<SHORT_NAME>   e.g. AC-13-RANGE
+ERROR = <endpoint prefix>-<HTTP status>-<SHORT_NAME>    e.g. AC-409-NOSTATE
+```
+
+The middle slot stays unambiguous: checks use 1–2 digits, errors use a 3-digit
+HTTP status. Prefixes are the §6.1 ones (`RG`, `UD`, `AC`, `UP`, `MA`, `XX`).
 
 **Required changes:**
 
-- [ ] `app/models.py` + migration — add `data_uploads.excluded_from_update`
-      (bool, default `FALSE`).
-- [ ] `app/routes/data.py` — on validation failure, persist the raw payload
-      in a `data_uploads` row flagged `excluded_from_update = TRUE`, then
-      return the `4xx` unchanged.
-- [ ] `app/routes/action.py` — the latest-snapshot lookup must skip flagged
-      rows; `app/reward_derivation.py` must skip them on the timeline walk.
-- [ ] Tests — an invalid upload returns `400`, a flagged row exists, and
-      `/action` + `/update` behave as if it were never sent.
+- [ ] Decide the section-letter → prefix map (A → `AC`; B → `RG`/`UD` per
+      check; C, L → `UP`; E → `MA`/`XX`; D, G → `XX`) and a short name for
+      every check (A2–A15, B3–B11, C1–C11, L1–L4, D1, D3, E1–E7, G0).
+- [ ] `Monitoring-Spec.md` — rename IDs in §5 tables, §7 fallbacks, §8.1
+      examples, §11 work items/tests, and §12 open questions; extend §6.1 to cover
+      checks; add a new-ID column to Appendix A so old notes stay readable.
+- [ ] `API-Spec.md`, `Algorithm-Monitoring.md` — update any check-ID references.
+- [ ] Code — use the new IDs wherever `monitor_alarms.code` is written.
 
-**Acceptance.** No byte posted to `/upload_data` is ever lost, and flagged
-rows are invisible to the learner (state construction and reward derivation).
+**Acceptance.** Every alarm and error ID matches
+`^(RG|UD|AC|UP|MA|XX)-[0-9]{1,3}-[A-Z][A-Z0-9_]*$`, and Appendix A maps each
+old ID to its new one.
+
+---
+
+## 6. `/monitor/alarms`: return only the message, no extra alarm fields — NOT ADOPTED
+
+**Why.** `Monitoring-Spec.md` §8.1 proposes adding `owner` and `host_action` to
+each alarm returned to the host **[open #2]**. Keep the host contract of
+`API-Spec.md` §2.5 instead: each alarm already carries a human-readable
+`message`, and that is what the host displays. Whatever the host needs to know
+(including what it should do) goes into the `message` text. This closes open
+#2 against adding the two fields.
+
+**Required changes:**
+
+- [ ] `Monitoring-Spec.md` §8.1 — drop the `owner` and `host_action` rows from
+      the additions table and from the JSON example; state that the host
+      action, when there is one, is written into `message`.
+- [ ] `Monitoring-Spec.md` §8.2 — remove the reliance on `owner` for routing
+      alerts (the host routes on `severity` only, as in `API-Spec.md` §2.5).
+- [ ] `Monitoring-Spec.md` §9.1 — keep `owner` and `host_action` as internal
+      `monitor_alarms` columns if useful, but do not send them; build the
+      outgoing `message` from them.
+- [ ] `Monitoring-Spec.md` §12 — update open #2 with this decision.
+- [ ] Code — the `/monitor/alarms` serializer returns only the §2.5 fields
+      (`event_id`, `item_id`, `severity`, `message`, `detail`).
+
+**Acceptance.** The `/monitor/alarms` response matches `API-Spec.md` §2.5 with
+no added per-alarm fields, and each host-owned alarm's `message` says what the
+host should do.
+
+---
+
+## 7. Update the appendix and the m sweep for the 2/1/0 AYA reward — TODO
+
+**Why.** On 2026-10-13 `Overleaf_bridge/Algorithm_Design/main_new.tex` switched
+the AYA reward \eqref{eq:reward-aya} from (3, 0) to (2, 1, 0): 2 = dose reported
+taken, 1 = reported missed, 0 = no report (S. Murphy; E23 in
+`Simulation_Testbed/`). Every experiment in the testbed appendix and the m sweep
+(Figure `fig:runin-m`) still ran under the (3, 0) coding, and the doc says so
+in the appendix's *Observed rewards* paragraph.
+
+**Required changes:**
+
+- [ ] Rerun the STE calibration under the new coding (STE is defined on the
+      AYA reward level, so `te_scale` moves).
+- [ ] Rerun the m sweep (E18) and the Appendix B.11 design-choice arms with
+      the AYA learner on the new reward and its own noise scale (coin-flip
+      reward variance 0.64, `Simulation_Testbed/results/e23/sigma_emp_aya_coding.json`).
+- [ ] `main_new.tex` — update the m-sweep paragraph, the appendix results and
+      figures; then drop the "earlier binary coding" sentence and point the
+      STE definition, the *Evaluation* paragraph and the m-sweep paragraph
+      back to \eqref{eq:reward-aya}.
+
+**Acceptance.** No result in `main_new.tex` rests on the (3, 0) coding, and
+the doc no longer mentions it.
+
+---
+
+## 8. Normalize every reward to [0, 1] — DONE
+
+**Why.** On 2026-10-15 the team adopted S. Murphy's suggestion (comment on the
+reward ranges, `main_new.tex` §5.3) to put all three rewards on [0, 1]: each
+reward is divided by its range maximum (every range starts at 0), AYA by 2, CP
+by 5, REL by 5 + 2·w_adh. The testbed already does this
+(`Simulation_Testbed/sim/env.py`, `TrialConfig.normalize_rewards`, on by
+default). The rescaling is a change of units for the local fit, σ̂², τ²₀ and
+the EB step, which all move with the reward. The allocation slope b_ρ is the
+exception: it acts on the contrast in reward units, so the same b_ρ = 20 gives
+a flatter allocation for any agent whose range exceeds 1. On one testbed trial,
+normalizing with each agent's b_ρ multiplied by its r_max reproduced every
+action of the native-scale run, while normalizing with b_ρ = 20 moved π by
+0.02 (AYA), 0.03 (CP) and 0.05 (REL) on average.
+
+Implemented in `app/learner/rewards.py` and `app/hyperparams.py`. The design
+learner stores normalized rewards in `study_data.reward`, retains native values
+in `study_data.outcome["reward_native"]`, uses the fixed normalized noise
+scales, and applies the per-agent slope `b_rho * r_max`. Tests cover each
+agent's minimum and maximum reward and the derived hyperparameters.

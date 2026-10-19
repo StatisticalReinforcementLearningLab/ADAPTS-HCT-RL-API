@@ -56,5 +56,6 @@ dependencies:
       - pyyaml==6.0.2
       - requests==2.32.3
       - responses==0.25.3
+      - scipy==1.15.1
       - urllib3==2.3.0
       - werkzeug==3.1.3

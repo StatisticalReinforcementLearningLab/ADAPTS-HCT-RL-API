@@ -8,9 +8,10 @@ The contract from the host's perspective:
 2. **`/action` is context-free.** The API reads the dyad's most recent
    uploaded snapshot and projects out the subset the requested `decision_type`
    needs. See §2.2.
-3. **`/update` issues no callback.** The monitoring algorithm schedules updates
-   and watches for completion via the `model_update_requests` table; the API
-   does not POST back. See §2.4.
+3. **`/update` is triggered by the host and issues no callback.** The host's
+   app server calls it weekly (Monday 03:00); the monitoring algorithm on the
+   API server watches for completion via the `model_update_requests` table and
+   raises alarms; the API does not POST back. See §2.4.
 4. **Every response uses one common envelope.** A given endpoint returns the
    same set of fields regardless of success, failure, or failure type. Every
    response carries `status`, `title`, `message`, and `server_timestamp`; the
@@ -19,7 +20,7 @@ The contract from the host's perspective:
    (valid identifiers, per-call ids like `rid`) is echoed. See the §2 preamble.
 5. **Alarms are pulled, not pushed.** A monitoring algorithm runs on the API
    server and raises alarms; the host collects them by polling
-   `/monitor/alarms` (read-only, once daily). The API does not POST them to the
+   `/monitor/alarms` (read-only, at 05:50 and 17:50). The API does not POST them to the
    host, and the individual monitoring items are documented outside this
    contract. See §2.5.
 
@@ -27,8 +28,8 @@ The contract from the host's perspective:
 
 ## 1. Overview
 
-The RL API is a Flask REST service. The study **host** (app backend + scheduler, owned by the Michigan team) calls it at each decision time; the API returns a randomized action, logs the latest values of every variable the host posts, and re-fits the learner on a periodic schedule triggered by
-the monitoring algorithm.
+The RL API is a Flask REST service. The study **host** (app backend + scheduler, owned by the Michigan team) calls it at each decision time; the API returns a randomized action, logs the latest values of every variable the host posts, and re-fits the learner when the host triggers the weekly `/update`; a
+monitoring algorithm on the API server watches those updates and raises alarms.
 
 - **The API is the system of record for all model state.** The host relays raw values and does not compute model parameters. The algorithm API takes inputs the context and generates a sampling probability and the action for each decision call.
 - **Three decision types (agents)**, all served by one learner with cross-dyad pooling:
@@ -46,8 +47,8 @@ failure, regardless of failure type. Five fields are always present:
 
 | Field | Type | Notes |
 |---|---|---|
-| `status` | int | HTTP status code, echoed in the body (equals the response's HTTP status, so a client may branch on either). Success: `201` (`202` for `/update`; `200` for an idempotent `/action` replay, §2.2; `200` for the read-only `/monitor/alarms` pull, §2.5). Client errors: `400`, `404`, `409`. Server errors: `500`, `503`. |
-| `title` | string | stable outcome label, e.g. `"Success"`, `"Invalid Parameter"`, `"Unknown Group"`, `"No State Available"`, `"Duplicate Decision"`, `"Internal Error"`, `"Service Unavailable"`; distinguishes failures that share one HTTP code |
+| `status` | int | HTTP status code, echoed in the body (equals the response's HTTP status, so a client may branch on either). Success: `201` (`202` for `/update`; `200` for an idempotent `/action` replay, §2.2; `200` for the read-only `/monitor/alarms` pull, §2.5). Client errors: `400`, `404`, `405`, `409`. Server errors: `500`, `503`. |
+| `title` | string | stable outcome label, e.g. `"Success"`, `"Invalid Parameter"`, `"Unknown Group"`, `"Duplicate Decision"`, `"Internal Error"`, `"Service Unavailable"`; distinguishes failures that share one HTTP code |
 | `message` | string | human-readable detail, e.g. `"decision_type must be one of aya_message / cp_message / dyad_game."` |
 | `server_timestamp` | ISO-8601 string | server time the response was produced. Named distinctly from the request-body `timestamp` (the host's decision/upload time) to avoid the request/response key collision. |
 | `rid` | string | per-call request id the API assigns to **every** call on **every** endpoint; **always present, even on failure** (assigned on receipt, before any write). Where the call writes a primary row, the same `rid` is persisted on it — `groups.rid`, `actions.rid`, `data_uploads.rid`, `model_update_requests.rid`, `monitor_pulls.rid` — so the host can reconcile a response with server state. It additionally serves as the `/action` idempotency-replay handle (§2.2) and the key the monitoring algorithm polls in `model_update_requests` for `/update` (§2.4, §5.6). |
@@ -66,15 +67,14 @@ every value the API still knows is echoed as its real value.** Concretely:
   was malformed.
 
 The host must not read the `null` fields; each endpoint's error table gives the
-recommended action. Example failure envelope (`/action`, `409` — the request is
-well-formed and the dyad is valid, so the identifiers and per-call `rid` are
-echoed; only the un-producible decision outputs are `null`):
+recommended action. Example failure envelope (`/action`, `500` — the request is
+well-formed and the dyad is valid, but the API could not persist a decision):
 
 ```json
 {
-  "status": 409,
-  "title": "No State Available",
-  "message": "No /upload_data has been received for dyad_007; send a snapshot first.",
+  "status": 500,
+  "title": "Internal Error",
+  "message": "The decision could not be persisted.",
   "server_timestamp": "2026-06-10T07:30:01",
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
@@ -82,6 +82,11 @@ echoed; only the un-producible decision outputs are `null`):
   "state": null, "model_param": null
 }
 ```
+
+An unknown route returns `404 Not Found`, and a known route called with the
+wrong HTTP method returns `405 Method Not Allowed`. Both use this standard
+envelope, include a nonempty `rid`, and raise a yellow host-owned alarm; neither
+is converted into `500`.
 
 ### 2.1 `POST /api/v1/register_group` — register a dyad
 
@@ -93,7 +98,7 @@ Request:
 |---|---|---|
 | `group_id` | string | unique dyad identifier |
 | `member_list` | list | participant identifiers, e.g. `[cp_id, aya_id]` |
-| `consent_start_date` | `YYYY-MM-DD` | onboarding/consent complete; must be a **Monday** — it starts the study clock (`day_in_study = 1`) |
+| `consent_start_date` | `YYYY-MM-DD` | onboarding/consent complete; the dyad's first decision day, on **any day of the week**. It starts the study clock (`day_in_study = 1`). Study weeks run Monday–Sunday for every dyad: week 1 starts on the first Monday on or after `consent_start_date`, and the days before it are the dyad's **partial week** (`week_in_study = 0`; none if `consent_start_date` is a Monday). See §3 and §4.1. |
 | `consent_end_date` | `YYYY-MM-DD` | active window end (≈ start + 100 days) |
 
 
@@ -160,18 +165,18 @@ intervention):
 |---|---|---|---|
 | `400` | `Invalid Parameter` | required field missing or malformed | no partial row written; correct and re-submit |
 | `409` | `Member Mismatch` | re-registration with a `member_list` differing from the recorded members | membership is fixed at first registration; do not attempt to change it here |
+| `500` | `Internal Error` | unexpected API failure | safe to retry; escalate if it repeats |
 | `503` | `Service Unavailable` | database write failure | safe to retry with backoff (writes exactly one row, no other side effects) |
 
 Error examples. `rid` is always present; parsed fields are echoed; only
 a malformed field is `null`.
 
-[TODO: does not need to be Tuesday]
 ```json
 // 400 — consent_start_date malformed (the other fields parsed, so they echo)
 {
   "status": 400,
   "title": "Invalid Parameter",
-  "message": "consent_start_date must be a Monday in YYYY-MM-DD format; got \"2026-05-26\" (Tuesday).",
+  "message": "consent_start_date must be a date in YYYY-MM-DD format; got '2026-05-32'.",
   "server_timestamp": "2026-05-25T14:03:12",
   "group_id": "dyad_007",
   "member_list": ["cp_007", "aya_007"],
@@ -251,9 +256,9 @@ Response — common envelope plus:
 | `decision_idx` | int | echo |
 | `action` | int | chosen action: `0` = do not send / game off, `1` = send / game on. `null` on failure (no decision made). |
 | `action_prob` | float | **Pr(action = 1)** — the probability the learner assigned to `action = 1`, regardless of which action was chosen (no conversion needed). Always `0.5` during warm-up; `null` on failure. |
-| `warmup` | bool | `true` if a pure `Bernoulli(0.5)` draw (learner bypassed); surfaced for logging only — the host need not act on it. `null` on failure. |
-| `state` | list[float] | the state/feature vector the learner scored, recorded alongside the decision (echoes `actions.state`, §5.2). `null` on warm-up and on failure. |
-| `model_param` | list[float] | the flat model-parameter vector the learner scored to produce `action_prob`. **Opaque to the host** — the host records/echoes it for later reproducibility and analysis but does not interpret its contents or need to know which learner is active. `null` on warm-up (no learner was used) and on failure. |
+| `warmup` | bool | `true` whenever the learner was bypassed and the API used a reproducible `Bernoulli(0.5)` draw: scheduled warm-up, no uploaded state, no valid weekly policy, or an internal learner failure. The API draws scheduled warm-up decisions in a dyad's partial week and week 1 (§2.1), and for every dyad while fewer than 5 dyads have started week 1. `null` only when the API itself cannot return a decision. |
+| `state` | list[float] | the state/feature vector available for the decision (echoes `actions.state`, §5.2). `null` on scheduled warm-up and whenever no state could be built; it remains non-null for a fallback if state construction succeeded. |
+| `model_param` | list[float] | the flat model-parameter vector the learner scored to produce `action_prob`. **Opaque to the host.** `null` whenever the learner was bypassed (`warmup = true`) and on failure. |
 
 `action_prob` is always `Pr(action = 1)`, even when the chosen `action` is `0`;
 the host uses it as-is and never reconstructs it. `state` and `model_param` are
@@ -295,6 +300,10 @@ response can never cause the server and the host to disagree about which action
 was taken, and no second action is minted. The host should treat this `200`
 exactly like a `201` success and use the returned action.
 
+**Consent dates are monitored, not enforced by `/action`.** A call before the
+registered `consent_start_date` or after `consent_end_date` still returns and
+saves a normal decision. Monitoring raises a yellow, host-owned A8 alarm.
+
 ```json
 // 200 — replay of an already-committed decision (original outputs echoed verbatim)
 {
@@ -312,10 +321,23 @@ exactly like a `201` success and use the returned action.
 }
 ```
 
-**Errors.** `/action` is the only hard-real-time endpoint, so a decision must
-never be lost. On **any** failure the host applies the same **local fallback**:
-draw `Bernoulli(0.5)` itself and record `action_prob = 0.5` (it does not read the
-`null` action fields).
+**API-side fallback.** `/action` is the only hard-real-time endpoint, so a
+valid request must return a decision whenever the API is reachable. If the
+dyad has no uploaded state, no valid weekly policy, the learner crashes, or a
+computed probability is invalid, the API draws `Bernoulli(0.5)` from its saved
+random primitives, persists the decision, and returns an ordinary `201`
+success with `action_prob = 0.5`, `warmup = true`, and `model_param = null`.
+`state` is `null` only when no state could be built. The action row records a
+machine-readable fallback reason (`no_state`, `no_policy`, `learner_error`, or
+`invalid_probability`). A no-state fallback raises one yellow, host-owned
+alarm; the other causes raise RL-owned alarms. A fallback decision enters
+learning when its decision-time state and outcome are available and is omitted
+otherwise.
+
+Only failures that prevent the API from minting and saving a decision return
+an error. On such an error, or when the API cannot be reached, the host draws
+`Bernoulli(0.5)` locally and records `action_prob = 0.5`; that host-side draw
+cannot enter the API's model fit.
 
 (A repeat of the idempotency triple is **not** listed here — it is a `200`
 replay of the original decision, described above, not a failure.)
@@ -324,9 +346,8 @@ replay of the original decision, described above, not a failure.)
 |---|---|---|---|
 | `400` | `Invalid Parameter` | missing / type-invalid field (named in `message`) | correct and re-send |
 | `404` | `Unknown Group` | `group_id` not registered | fix the registration before the next decision |
-| `409` | `No State Available` | no `/upload_data` yet for this dyad | send the first snapshot before the next `/action` |
-| `500` | `Internal Error` | learner or other internal failure (incl. sample buffer unavailable) | infrastructure alert raised |
-| `503` | `Model Not Initialized` | the learner/model is not yet loaded or deployed (ops/deployment issue, not a host input error) | raise a deployment alert; not host-fixable |
+| `500` | `Internal Error` | the API could not mint or persist even a fallback decision | infrastructure alert raised |
+| `503` | `Service Unavailable` | the decision store is unavailable, so no learned or fallback action can be committed | infrastructure alert; host uses its local fallback |
 
 Error examples. `rid` is always present; valid request identifiers are echoed;
 only the un-producible decision outputs (`action`, `action_prob`, `warmup`) and
@@ -359,27 +380,26 @@ any field that is itself the cause of failure are `null`.
   "state": null, "model_param": null
 }
 ```
-[TODO: we still want to generate a decision when there is no data upload.]
 ```json
-// 409 — no upload history yet (request valid; only the decision can't be produced)
+// 201 — no upload history yet; reproducible API-side fallback
 {
-  "status": 409,
-  "title": "No State Available",
-  "message": "No /upload_data has been received for dyad_007; send a snapshot first.",
+  "status": 201,
+  "title": "Success",
+  "message": "Action requested successfully using the no-state fallback.",
   "server_timestamp": "2026-06-10T07:30:01",
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
-  "action": null, "action_prob": null, "warmup": null,
+  "action": 1, "action_prob": 0.5, "warmup": true,
   "state": null, "model_param": null
 }
 ```
 
 ```json
-// 500 — internal / learner failure (request fully valid; failure is server-side)
+// 500 — neither the learned decision nor a fallback could be persisted
 {
   "status": 500,
   "title": "Internal Error",
-  "message": "Learner raised an exception while sampling the action.",
+  "message": "The decision could not be persisted.",
   "server_timestamp": "2026-06-10T07:30:01",
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
@@ -389,11 +409,11 @@ any field that is itself the cause of failure are `null`.
 ```
 
 ```json
-// 503 — model not yet initialized/deployed (request valid; ops-side failure, not host-fixable)
+// 503 — decision store unavailable, so no action can be committed
 {
   "status": 503,
-  "title": "Model Not Initialized",
-  "message": "The learner for aya_message is not loaded; the deployment is not ready to serve decisions.",
+  "title": "Service Unavailable",
+  "message": "The decision store is unavailable; use the host fallback.",
   "server_timestamp": "2026-06-10T07:30:01",
   "group_id": "dyad_007", "decision_type": "aya_message", "decision_idx": 29,
   "rid": "a1b2c3d4",
@@ -411,14 +431,34 @@ There is also **no** `decision_type` or `decision_idx` — each upload is a
 flat "current state of the dyad" snapshot, not tied to a particular decision.
 
 <a id="upload-schedule"></a>**Upload schedule.** The host calls `/upload_data`
-**exactly once immediately before every `/action`**, in decision order. Each
-day's uploads (each paired with the `/action` it precedes):
+**exactly once immediately before every `/action`**, in decision order, and
+additionally **once per week before the weekly `/update`** (the
+*week-closing* upload, below). Each day's uploads (each decision-time upload
+paired with the `/action` it precedes):
 
 | Day | Uploads, in order | Count |
 |---|---|---|
-| Monday | pre-`dyad_game` → pre-AYA-AM → pre-CP → pre-AYA-PM | 4 |
-| Tue–Sat | pre-AYA-AM → pre-CP → pre-AYA-PM | 3 |
-| Sunday | none | 0 |
+| Monday | week-closing (before 03:00) → pre-`dyad_game` → pre-AYA-AM → pre-CP → pre-AYA-PM | 5 |
+| Tue–Sun | pre-AYA-AM → pre-CP → pre-AYA-PM | 3 |
+
+A dyad has no `dyad_game` decision in its partial week (§3), so each
+partial-week day has the 3 Tue–Sun uploads, and its first week-closing upload
+is the one before the Monday that starts week 1.
+
+<a id="week-closing-upload"></a>**Week-closing upload (required before every
+`/update`).** For every dyad that had at least one decision in the study week
+that just ended, the host posts one full snapshot **after the last outcome of
+that week is final (end of Sunday) and before the Monday 03:00 `/update`**
+(target window: Monday 00:00–02:45). It is an ordinary `/upload_data` call;
+its field values follow the **pre-`dyad_game` (Monday AM) convention** of
+§4.1 — in particular `previous_med_adherence`, the diary fields, and the
+weekly relationship-quality fields carry the week's final values, and
+`current_game_on` is `"miss"`. The `/update` derives rewards only from uploads
+received before it starts, so this snapshot is what closes the outcomes of the
+week's last decisions and carries the week's relationship-quality survey into
+the fit. A dyad whose week-closing upload is missing at 03:00 has those last
+outcomes deferred to the following week's update, and the monitoring
+algorithm raises an alarm (§2.5).
 
 Within a single morning most fields carry the same value (measurements don't
 change in minutes); the exceptions are `current_game_on` and
@@ -445,27 +485,29 @@ Request body (example — the pre-AYA-AM snapshot on Wednesday of study week 3):
     "day_in_study": 17,
     "week_in_study": 3,
     "slot": "am",
-    "aya_diary_mood": 0.6,
-    "aya_diary_physical": 0.4,
+    "aya_diary_mood": 4,
+    "aya_diary_physical": 3,
     "aya_app_engagement": 3,
     "aya_app_burden": 1.5,
     "aya_missing_rate_7d": 0.14,
     "previous_med_adherence": 1,
     "prompted_by_message": true,
-    "cp_diary_mood": 0.5,
+    "aya_messages_delivered_week": 5,
+    "cp_diary_mood": 3,
     "cp_app_engagement": 2,
     "cp_app_burden": 1.2,
     "cp_missing_rate_7d": 0.1,
+    "cp_prompted_by_message": true,
+    "cp_messages_delivered_week": 2,
     "daily_diary_completed": true,
-    "daily_diary_score": 0.5,
-    "relationship_quality_aya": 0.8,
-    "relationship_quality_cp": 0.7,
+    "relationship_quality_aya": 4,
+    "relationship_quality_cp": 3,
     "current_game_on": 1,
     "prior_game_action": 0,
     "aya_diary_summary": 0.55,
     "cp_diary_summary": 0.5,
     "weekly_survey_completed": true,
-    "weekly_relationship_score": 0.75
+    "weekly_relationship_score": 3.5
   }
 }
 ```
@@ -494,8 +536,9 @@ derivation, so never silently drop; on any error, correct and re-send):
 
 | `status` | `title` | Cause | Host action |
 |---|---|---|---|
-| `400` | `Invalid Parameter` | missing / unknown / type-invalid field (see §4.1 for the accepted set) | send the full snapshot with `"miss"` where needed; correct and re-send |
+| `400` | `Invalid Parameter` | missing, unknown, type-invalid, out-of-range, or internally inconsistent field (see §4.1) | send the full snapshot with `"miss"` where needed; correct and re-send |
 | `404` | `Unknown Group` | unknown `group_id` | register the dyad, then re-send |
+| `500` | `Internal Error` | unexpected API failure | safe to retry; escalate if it repeats |
 | `503` | `Service Unavailable` | database write failure | safe to retry (append-only; a duplicate row is harmless) |
 
 Error examples (envelope only — `/upload_data` has no endpoint-specific fields):
@@ -533,15 +576,26 @@ Error examples (envelope only — `/upload_data` has no endpoint-specific fields
 }
 ```
 
-> **[planned — `IMPLEMENTATION_TODO.md`]** rejected `400` payloads will be
-> preserved verbatim for post-trial analysis.
+Every rejected `400` request body is preserved byte-for-byte in a dedicated,
+access-controlled error-data store together with its `rid`, validation errors,
+body fingerprint, and receipt time. The verbatim body never appears in an
+alarm or API error-log record.
 
 ### 2.4 `POST /api/v1/update` — re-fit the model
 
-Asynchronous. The **monitoring algorithm** (a separate component, see
-`Monitoring_Algorithm/`) is responsible for triggering this on its own
-schedule (production target: weekly, Monday 3 AM, §3) and for watching for
-completion. The API fits in a background thread.
+Asynchronous. The **host's app server** triggers it on a fixed schedule
+(weekly, Monday 03:00, §3). The API fits in a background thread; the
+**monitoring algorithm** on the API server watches for completion and raises
+alarms if the request does not arrive, fails, or stalls
+(`Monitoring-Spec.md` §5.C).
+
+**Precondition: uploads before update.** The host posts the
+[week-closing upload](#week-closing-upload) for every dyad active in the week
+just ended **before** the Monday 03:00 `/update` is triggered. The update uses
+only `data_uploads` rows received before it starts; an upload that arrives
+later is used at the next weekly update.
+The host does not delay `/update` for a missing dyad: it calls at 03:00 with
+the available data, and monitoring raises B11 for the missing upload.
 
 **No callback.** The monitoring algorithm observes completion by reading the
 `model_update_requests` table directly. The API does not POST anywhere on
@@ -585,12 +639,13 @@ acceptance is reported via `model_update_requests.status = "failed"` (§5.6, §7
 
 | `status` | `title` | Cause | Host action |
 |---|---|---|---|
+| `400` | `Invalid Parameter` | `timestamp` missing or malformed | correct and re-send |
+| `500` | `Internal Error` | unexpected API failure before enqueue | retry; escalate if it repeats |
 | `503` | `Service Unavailable` | could not enqueue the update | retry |
 
 Error example. `rid` is still present (the API assigns it on receipt), but on a
 `503` the enqueue failed, so **no `model_update_requests` row was created** — this
-`rid` keys no row and the monitoring algorithm should simply retry rather than
-poll it:
+`rid` keys no row and the host should simply re-send `/update`:
 
 ```json
 // 503 — could not start the update
@@ -613,6 +668,13 @@ Behavior once accepted:
 - On completion, sets `model_update_requests.status` to `completed` (and
   stamps `completed_at`) or `failed` (and stamps `error_message`).
 
+**Publication deadline.** A weekly policy is eligible for use only if its fit,
+validation, and atomic publication all finish by Monday 05:45
+`America/Detroit`. If the deadline is missed, every agent uses its last valid
+policy for the entire study week; an agent with no prior valid policy uses the
+reproducible 50/50 fallback. A late result is retained for diagnosis but never
+activated partway through the week. Monitoring raises C7.
+
 ### 2.5 `GET /api/v1/monitor/alarms` — collect alarms raised on the API server
 
 A **monitoring algorithm runs on the API server** alongside the four endpoints
@@ -626,13 +688,14 @@ cadence — are **not part of this contract** and are documented separately
 (`Overleaf/Monitoring_Algorithm/`). This endpoint is deliberately
 item-agnostic: each alarm carries an opaque `item_id`, and the host **stores
 and displays it without branching on it**. New items can therefore be added,
-retired, or re-thresholded during the trial with no host-side change. The one
-field the host may branch on is `severity`.
+retired, or re-thresholded during the trial with no host-side change. The host
+may branch on `severity` and `owner`, but not on `item_id`, `message`, or
+`detail`.
 
 **Three properties distinguish this endpoint from §2.1–2.4.**
 
-1. **Read-only and `GET`.** It writes no study state, takes query parameters
-   rather than a JSON body, and returns `200` (not `201`) on success. It is
+1. **Read-only and `GET`.** It writes no study state and takes neither query
+   parameters nor a JSON body. It returns `200` (not `201`) on success and is
    safe to call at any time, any number of times.
 2. **Not dyad-scoped.** One call returns every alarm the monitoring algorithm
    raised in the window, across all dyads and all three agents. There is no
@@ -640,22 +703,19 @@ field the host may branch on is `severity`.
 3. **Off the real-time path.** No decision depends on it. A failed pull is
    retried on the next cycle; it never triggers the `/action` local fallback.
 
-**Path.** The monitoring design doc refers to this feed as
-`GET /api/v1/monitor/events`; `/api/v1/monitor/alarms` is the canonical path
-and the two denote the same records.
+**Path.** `/api/v1/monitor/alarms` is canonical. The former
+`/api/v1/monitor/events` name remains a deprecated alias to the same handler.
 
-Request — one optional query parameter:
-
-| Parameter | Type | Notes |
-|---|---|---|
-| `since` | ISO-8601 | return alarms raised **after** this time. Omitted ⇒ `server_timestamp − 24 h`, i.e. the plain call collects the past day. |
-
-Request (example — the daily poll, and the same call with an explicit start):
+Request:
 
 ```
 GET /api/v1/monitor/alarms
-GET /api/v1/monitor/alarms?since=2026-06-09T06:00:00
 ```
+
+Every call returns all alarms whose `raised_at` falls in the 24 hours before
+that response's `server_timestamp`. The endpoint has no paging or historical
+window parameter. Overlapping pulls are expected; the host deduplicates by
+`event_id`. Older rows remain stored and are included in study exports.
 
 Response — common envelope plus:
 
@@ -671,6 +731,8 @@ Each element of `alarms`:
 | `event_id` | string | stable identity of this alarm. The host stores it so a re-pull over an overlapping window does not double-count. |
 | `item_id` | string | opaque identifier of the monitoring item that fired. Enumerated outside this document; the host records and displays it but does not interpret or branch on it. |
 | `severity` | string | `red` / `yellow` / `green`. The only field the host branches on. |
+| `owner` | string | `host` / `rl`; the team responsible for investigating the alarm. |
+| `raised_at` | ISO-8601 string | when this alarm was generated, in `America/Detroit` with its UTC offset. |
 | `message` | string | human-readable summary, suitable for direct display. Wording may change between releases; never parse it. |
 | `detail` | object | free-form, item-specific context (measured value, threshold, affected dyads). **Opaque to the host** — stored and displayed verbatim, not interpreted. Carries no participant data. May be `{}`. |
 
@@ -687,6 +749,8 @@ Each element of `alarms`:
       "event_id": "3f2a9c14-7b0e-4d51-9a62-0c8e5b1d7f34",
       "item_id": "XX-000",
       "severity": "yellow",
+      "owner": "host",
+      "raised_at": "2026-06-10T05:45:00-04:00",
       "message": "Monitoring item XX-000 fired for dyad_007 (4 occurrences).",
       "detail": {"value": 0.23, "threshold": 0.2, "window": "24h"}
     },
@@ -694,6 +758,8 @@ Each element of `alarms`:
       "event_id": "8c41d0b7-52aa-4f19-b3c7-6e2f90a4d115",
       "item_id": "YY-000",
       "severity": "red",
+      "owner": "rl",
+      "raised_at": "2026-06-10T05:50:00-04:00",
       "message": "Monitoring item YY-000 fired for cp_message.",
       "detail": {}
     }
@@ -707,29 +773,16 @@ does not enumerate them.)
 
 **Errors** (guiding principle — the alarm feed is diagnostic, never on the
 real-time path; a failed pull is simply retried on the next cycle, and no
-alarm is lost because the feed is a window over persisted state rather than a
-queue that drains):
+alarm inside the rolling 24-hour window is lost because the feed is a window
+over persisted state rather than a queue that drains):
 
 | `status` | `title` | Cause | Host action |
 |---|---|---|---|
-| `400` | `Invalid Parameter` | `since` is not a parseable ISO-8601 timestamp | correct and re-send |
+| `500` | `Internal Error` | unexpected API failure | retry; escalate if it repeats |
 | `503` | `Service Unavailable` | monitoring store unreadable | safe to retry with backoff (read-only) |
 
 Error examples. `rid` is always present; only the un-producible results are
 `null`.
-
-```json
-// 400 — since is not parseable (no window could be applied)
-{
-  "status": 400,
-  "title": "Invalid Parameter",
-  "message": "since must be an ISO-8601 timestamp; got \"yesterday\".",
-  "server_timestamp": "2026-06-10T06:00:02",
-  "rid": "m3d81f0a",
-  "count": null,
-  "alarms": null
-}
-```
 
 ```json
 // 503 — monitoring store unreadable (request valid; nothing was produced)
@@ -747,7 +800,7 @@ Error examples. `rid` is always present; only the un-producible results are
 **A successful pull returning zero alarms is the healthy case, and is not the
 same as no pull.** `count: 0` means the monitoring algorithm ran and raised
 nothing; a failed or skipped pull means the host learned nothing either way.
-The host should therefore treat *the absence of a successful daily pull* — not
+The host should therefore treat *the absence of a successful pull* — not
 an empty result — as the condition worth surfacing to the developer. The API
 records every pull (§5.11), so the same gap is visible from the RL side.
 
@@ -758,8 +811,9 @@ records every pull (§5.11), so the same gap is visible from the RL side.
 This section walks through a complete week of API calls for one active
 dyad, using concrete clock times. It expands on
 `ADAPTS-HCT-Interaction-Flow.md` (which only sketches the once-per-week
-events) by laying out the full Mon–Sat pattern that the host runs against
-every active dyad. All times are in the dyad's local study timezone.
+events) by laying out the full Monday–Sunday pattern that the host runs against
+every active dyad. All calendar calculations and scheduled times use the
+single study timezone `America/Detroit`, including daylight-saving changes.
 
 **Assumed per-dyad clock (illustrative — each dyad picks its own MTW
 windows during onboarding):**
@@ -776,25 +830,29 @@ notification before they start medication), and collects the post-window
 reports (adherence, diary) for the next upload. There is **no cohort-wide
 decision clock**: each AYA and CP independently selects a 2-hour AM and PM
 window, and `/action` fires relative to *their* windows. (The bundled
-simulator approximates this with a single Sunday clock; production issues
+simulator approximates this with a single clock for all dyads; production issues
 per-window calls.)
 
 **One-time, at recruitment.** Host POSTs `/register_group` once per dyad (any
 time before the first decision; dyads enroll ≈1/week, non-sequential, with
 overlapping active windows).
 
-**Weekly cron — Monday 03:00.** Monitoring algorithm POSTs `/update`. The
-fit runs in a background thread; the monitoring algorithm watches
-`model_update_requests` for completion (§2.4). Must finish before 06:00,
-when the first `/action` of the week is requested.
+**Weekly cron — Monday 00:00–02:45** (week-closing upload; once per week per
+dyad active in the week just ended). Host POSTs `/upload_data` with the
+Monday-AM values of §4.1 (`current_game_on = "miss"`), after Sunday's outcomes
+and the weekly relationship-quality survey are final. Must complete before the
+03:00 `/update` (§2.3, [week-closing upload](#week-closing-upload)).
 
-**Daily cron — 06:00** (alarm collection; not dyad-scoped). Host GETs
-`/monitor/alarms` and records the returned alarms, keyed by `event_id`, in the
-developer-facing view (§2.5). One call covers all dyads and all three agents.
-With `since` omitted the call collects the past 24 h, which matches a daily
-cadence; a host recovering from a gap passes its last successful pull time as
-`since`. The time of day is arbitrary — nothing downstream depends on it — but
-a fixed daily slot makes a missed pull visible.
+**Weekly cron — Monday 03:00.** Host POSTs `/update`. The
+fit runs in a background thread; the monitoring algorithm watches
+`model_update_requests` for completion (§2.4). A new policy must be published
+by 05:45 or the prior valid policy remains active for the entire week.
+
+**Daily cron — 05:50 and 17:50** (alarm collection; not dyad-scoped). Host
+GETs `/monitor/alarms` and records every returned alarm, keyed by `event_id`,
+in the developer-facing view (§2.5). One call covers all dyads and all three
+agents and returns the preceding 24 hours, so the two calls overlap. Monitoring
+raises E6 after 24 hours without a successful pull.
 
 **Weekly cron — Monday 06:00** (`dyad_game` decision; once per week).
 
@@ -811,12 +869,12 @@ a fixed daily slot makes a missed pull visible.
    its delivery log; this becomes `current_game_on` for every subsequent
    upload this week.
 
-**Daily — Mon–Sat 07:30** (AYA-AM and CP decisions).
+**Daily — 07:30** (AYA-AM and CP decisions).
 
 1. **`POST /upload_data`** (pre-AYA-AM):
    - `slot = "am"`
    - `current_game_on` = $a^{(g)}_w$ (binary; Mon onwards) or `"miss"`
-     pre-week-1
+     in the partial week
    - `previous_med_adherence` = AYA's response to the **previous evening's**
      MTW (yesterday 20:00–22:00). `"miss"` if no response.
    - `prompted_by_message` = `true` iff the previous evening's AYA-PM
@@ -834,7 +892,7 @@ a fixed daily slot makes a missed pull visible.
    If $a_k = 1$, host queues the AYA-AM supportive message for delivery
    before the morning MTW opens.
 
-**Daily — Mon–Sat 07:35** (CP decision, immediately after AYA-AM).
+**Daily — 07:35** (CP decision, immediately after AYA-AM).
 
 1. **`POST /upload_data`** (pre-CP): same full snapshot as the pre-AYA-AM
    upload, but issued as a separate call. (Field values are typically
@@ -852,7 +910,7 @@ evening's upload). The host also stamps the actual delivery outcome of
 the AYA-AM and CP messages (success / fail) for later use in
 `prompted_by_message`.
 
-**Daily — Mon–Sat 19:30** (AYA-PM decision).
+**Daily — 19:30** (AYA-PM decision).
 
 1. **`POST /upload_data`** (pre-AYA-PM):
    - `slot = "pm"`
@@ -879,25 +937,35 @@ responds to the adherence question; AYA submits the daily diary (mood +
 physical); CP submits the daily diary (mood). The host records all three
 for use in tomorrow's AM upload.
 
-**Sunday — no calls.** No `/upload_data` or `/action` calls all day. The
-host uses Sunday to finalize Saturday-evening reports (adherence + AYA
-diary + CP diary), administer the weekly relationship-quality survey
-(typically Sunday evening), and pre-stage data for Monday 06:00.
+**Sunday.** A decision day like the others (07:30, 07:35, 19:30). The host
+also administers the weekly relationship-quality survey (typically Sunday
+evening), collects the Sunday-evening reports (adherence + AYA diary + CP
+diary), and stages the week-closing upload that it posts after midnight,
+before the Monday 03:00 `/update`.
 
-**Cold-start (week 1, Monday).** The first call sequence of the dyad's
-study window. At every field that summarizes prior history
+**Partial week** (only if `consent_start_date` is not a Monday). From
+`consent_start_date` through the Sunday before week 1 (`week_in_study = 0`), the
+host runs the daily 07:30, 07:35, and 19:30 calls above but **no** `dyad_game`
+decision: no game is offered, and `current_game_on` and `prior_game_action`
+are `"miss"` at every upload. The API answers every partial-week `/action` with
+a warm-up draw. The partial week's Sunday carries the dyad's first weekly
+survey; its week-closing upload goes out before the next Monday 03:00
+`/update`, and its first `dyad_game` decision is at 06:00 that Monday, the
+first day of week 1. Week 1 is also a warm-up week (§2.2).
+
+**Cold-start (first decision).** The first call sequence of the dyad's
+study window, on `consent_start_date`. At every field that summarizes prior history
 (`previous_med_adherence`, `aya_diary_mood`, `aya_diary_physical`,
 `cp_diary_mood`, `prior_game_action`, `*_diary_summary`,
 `relationship_quality_*`), the host sends `"miss"`. `aya_app_burden`,
 `cp_app_burden`, `*_missing_rate_7d`, `weekly_relationship_score` are
-sent as `0.0`. `current_game_on` is `"miss"` until the Monday 06:00
-`dyad_game` /action returns. `prompted_by_message` is `false`.
+sent as `0.0`. `current_game_on` is `"miss"` until the dyad's first
+`dyad_game` /action returns (Monday 06:00 of week 1). `prompted_by_message`
+is `false`.
 
 ---
 
 ## 4. Data field dictionary
-
-[ZX: We plan to use only a subset of this list. Tell Pei-yao what we plan to use.]
 
 `/upload_data` carries a **full snapshot** of every variable listed in §4.1.
 The host does not need to know which variables the learner uses as context
@@ -921,11 +989,14 @@ Field-type encodings:
 - `unit_interval` ∈ [0, 1]
 - `nonneg_float` ≥ 0
 - `float_or_miss` — real number or `"miss"`
+- `item_1_5_or_miss` — raw ordinal response in {1, 2, 3, 4, 5} or `"miss"`
+- `score_1_5_or_miss` — raw or item-averaged score in [1, 5] or `"miss"`
 - `engagement` ∈ {1, 2, 3, 4} — ordinal app-engagement bucket
 - `engagement_or_miss` ∈ {1, 2, 3, 4, "miss"}
 - `unit_interval_or_miss` — [0, 1] or `"miss"`
 - `slot` ∈ {"am", "pm"}
 - `positive_int` ≥ 1
+- `nonneg_int` ≥ 0
 
 Any field whose value is unavailable for this upload must be sent as the
 literal `"miss"` (or JSON `null`); the learner masks `"miss"` values via the
@@ -942,17 +1013,20 @@ stated.
 #### Bookkeeping
 
 **`day_in_study`** — `positive_int`. 1-indexed day since the dyad's
-`consent_start_date` (day 1 = the consent-start Monday).
+`consent_start_date` (day 1 = `consent_start_date`, any day of the week).
 - *AM/PM value:* `day = (current_date - consent_start_date).days + 1`.
   Identical at AM and PM on the same calendar day.
 - *Missingness:* never missing (always computable).
 
-**`week_in_study`** — `positive_int`. 1-indexed week since
-`consent_start_date`.
-- *AM/PM value:* `week = floor((day_in_study - 1) / 7) + 1`.
-- *Alignment:* `consent_start_date` is a Monday (§2.1), so study weeks run
-  Monday–Sunday and `week_in_study` increments on Mondays, in step with the
-  weekly `dyad_game` cadence (§3).
+**`week_in_study`** — `nonneg_int`. Study week of the current date: `0` in
+the partial week, then 1-indexed Monday–Sunday weeks (§2.1).
+- *AM/PM value:* with `week1_start` the first Monday on or after
+  `consent_start_date`, `week = 0` if `current_date < week1_start`, else
+  `floor((current_date - week1_start).days / 7) + 1`.
+- *Alignment:* study weeks run Monday–Sunday for every dyad, so
+  `week_in_study` increments on Mondays, in step with the weekly `/update` and
+  `dyad_game` cadence (§3). A dyad whose `consent_start_date` is a Monday has
+  no week 0.
 - *Missingness:* never missing.
 
 **`slot`** — `slot`.
@@ -961,7 +1035,7 @@ stated.
 
 #### AYA-side
 
-**`aya_diary_mood`** — `float_or_miss`. AYA's response to the mood question
+**`aya_diary_mood`** — `item_1_5_or_miss`. AYA's raw response to the mood question
 on the daily AYA diary.
 - *Measurement schedule:* the AYA is prompted to complete the diary (mood
   + physical-symptoms questions) **once per day, at the evening MTW
@@ -974,7 +1048,7 @@ on the daily AYA diary.
 - *Missingness:* `"miss"` if the AYA did not submit yesterday's diary
   (skipped the prompt, did not open the app, or submitted only physical).
 
-**`aya_diary_physical`** — `float_or_miss`. AYA's response to the
+**`aya_diary_physical`** — `item_1_5_or_miss`. AYA's raw response to the
 physical-symptoms question on the daily AYA diary. Same measurement
 schedule (once per day, evening MTW only) and upload-timing rules as
 `aya_diary_mood` — both AM and PM uploads carry yesterday's response.
@@ -1007,19 +1081,19 @@ diary-completion analytics.
 the host from its own action-delivery log using the same discount as the
 AYA learner.
 - *Recurrence:* let $k$ index AYA decisions (twice daily; $k = 1, 2,
-  \ldots$), let $a_k \in \{0, 1\}$ be the action returned by `/action`
-  for AYA decision $k$, and let $\gamma_A = 13/14$. Define
+  \ldots$), let $d_k \in \{0, 1\}$ indicate whether the message for AYA
+  decision $k$ was actually delivered, and let $\gamma_A = 13/14$. Define
   $$
-  b_1 = 0, \qquad b_{k+1} = \gamma_A \, b_k + a_k.
+  b_1 = 0, \qquad b_{k+1} = \gamma_A \, b_k + d_k.
   $$
   Then `aya_app_burden` at the time of decision $k$ equals $b_k$ (i.e. it
   incorporates every AYA action through decision $k - 1$, exponentially
   decayed by $\gamma_A$ per AYA decision step).
 - *AM upload value:* $b_k$ for the upcoming AYA-AM decision $k$, i.e.
-  $\gamma_A \, b_{k-1} + a_{k-1}$, where $k - 1$ is the previous evening's
+  $\gamma_A \, b_{k-1} + d_{k-1}$, where $k - 1$ is the previous evening's
   AYA-PM decision.
 - *PM upload value:* $b_{k+1}$ for the upcoming AYA-PM decision $k + 1$,
-  i.e. $\gamma_A \, b_k + a_k$, where $k$ is that morning's AYA-AM
+  i.e. $\gamma_A \, b_k + d_k$, where $k$ is that morning's AYA-AM
   decision (whose action was delivered between the AM upload and the PM
   upload).
 - *Missingness:* not nullable. For the very first AM upload (no prior
@@ -1064,9 +1138,18 @@ actually delivered to the AYA during the same MTW that
 - *Missingness:* not nullable. Send `false` if `previous_med_adherence` is
   `"miss"` or if there is no prior MTW (first AM upload of the study).
 
+**`aya_messages_delivered_week`** — `nonneg_int`. Number of AYA supportive
+messages actually delivered in the dyad's current Monday–Sunday study week,
+from the host's delivery log. It counts successful deliveries, not API
+recommendations, and may exceed 14 only if a duplicate or unscheduled delivery
+occurred. It resets to zero after the week-closing upload. Thus the
+week-closing upload reports the final count for the week just ended, and the
+later Monday pre-`dyad_game` upload reports zero for the new week. Never
+missing.
+
 #### CP-side
 
-**`cp_diary_mood`** — `float_or_miss`. CP's response to the mood question
+**`cp_diary_mood`** — `item_1_5_or_miss`. CP's raw response to the mood question
 on the daily CP diary. The CP diary has **only** a mood question (no
 physical-symptoms question, unlike the AYA diary).
 - *Measurement schedule:* the CP is prompted once daily (typically the
@@ -1085,14 +1168,14 @@ schedule, upload-timing rules, and missingness policy as
 trace of past CP-message actions. Same construction as `aya_app_burden`
 with two differences: index $m$ runs over CP decisions (once daily, AM
 only) and the discount is $\gamma_C = 6/7$.
-- *Recurrence:* $b_1 = 0$, $b_{m+1} = \gamma_C \, b_m + a_m$ where
-  $a_m \in \{0, 1\}$ is the action returned by `/action` for CP decision
-  $m$.
+- *Recurrence:* $b_1 = 0$, $b_{m+1} = \gamma_C \, b_m + d_m$ where
+  $d_m \in \{0, 1\}$ indicates whether the CP message for decision $m$ was
+  actually delivered.
 - *AM upload value:* $b_m$ for the upcoming CP decision $m$, i.e.
-  $\gamma_C \, b_{m-1} + a_{m-1}$, where $m - 1$ is the previous morning's
+  $\gamma_C \, b_{m-1} + d_{m-1}$, where $m - 1$ is the previous morning's
   CP decision.
 - *PM upload value:* $b_{m+1}$ for the next CP decision (tomorrow
-  morning), i.e. $\gamma_C \, b_m + a_m$, where $m$ is that morning's CP
+  morning), i.e. $\gamma_C \, b_m + d_m$, where $m$ is that morning's CP
   decision (whose action was delivered between the AM upload and the PM
   upload). Carries the same value through to the next AM upload (no CP
   decision happens between PM upload $D$ and AM upload $D + 1$).
@@ -1118,18 +1201,25 @@ recent CP daily diary. Used as the basis for the `cp_message` reward.
 - *PM upload value:* same as that morning's AM value.
 - *Missingness:* not nullable; `false` indicates non-completion.
 
-**`daily_diary_score`** — `nonneg_float`. Score of the most recent
-completed CP daily diary. Since the CP diary contains only one question,
-this equals `cp_diary_mood` whenever it is non-missing.
-- *AM/PM value:* `cp_diary_mood` if `daily_diary_completed = true`,
-  else `0.0`.
-- *Missingness:* if `daily_diary_completed = false`, send `0.0` (the
-  learner ignores it).
-[TODO: Delete this]
+**`cp_prompted_by_message`** — `bool`. Whether the most recent scheduled CP
+supportive message was actually delivered. The pre-CP morning upload reports
+the previous day's CP delivery; the PM upload reports that morning's CP
+delivery and carries it through to the next morning. `true` requires both an
+API action of 1 and successful delivery. Never missing; use `false` before the
+first CP decision.
+
+**`cp_messages_delivered_week`** — `nonneg_int`. CP analogue of
+`aya_messages_delivered_week`. It counts successful CP-message deliveries in
+the current Monday–Sunday study week, reports the completed week's final count
+in the week-closing upload, resets before the Monday pre-`dyad_game` upload,
+and is never missing. A value above 7 identifies a duplicate or unscheduled
+delivery.
+
 #### Dyad-level
 
-**`relationship_quality_aya`** — `float_or_miss`. AYA's most recent
-relationship-quality score with the CP.
+**`relationship_quality_aya`** — `score_1_5_or_miss`. AYA's most recent
+relationship-quality score with the CP, computed from the raw 1–5 items
+without normalization.
 - *Measurement schedule:* the AYA is prompted weekly (host-defined day;
   assume Sunday evening) to complete a relationship-quality survey.
   Between administrations the host caches the most recent score.
@@ -1138,15 +1228,15 @@ relationship-quality score with the CP.
 - *Missingness:* `"miss"` until the AYA has completed at least one
   relationship survey.
 
-**`relationship_quality_cp`** — `float_or_miss`. Same definition,
+**`relationship_quality_cp`** — `score_1_5_or_miss`. Same definition,
 measurement schedule, and upload-timing rules as `relationship_quality_aya`,
 for the CP.
 
 **`current_game_on`** — `binary_or_miss`. Whether the dyad game is on in
 the current week — i.e. the action returned by the most recent
 `dyad_game` /action.
-- *Pre-`dyad_game` upload (Monday morning, before the weekly `dyad_game`
-  /action):* `"miss"`. The current week's `dyad_game` action has **not
+- *Week-closing upload (Monday before 03:00) and pre-`dyad_game` upload
+  (Monday morning, before the weekly `dyad_game` /action):* `"miss"`. The current week's `dyad_game` action has **not
   yet been decided** at this upload, and the previous week's action is
   captured separately by `prior_game_action` — so `current_game_on` is
   not yet meaningful. The `dyad_game` learner does not read
@@ -1157,11 +1247,13 @@ the current week — i.e. the action returned by the most recent
   `dyad_game` /action. The `aya_message` and `cp_message` learners read
   this value as a state feature for that morning's decisions.
 - *Pre-CP upload (Monday morning):* same as the pre-AYA-AM upload value.
-- *Pre-AYA-PM upload (Monday evening) and every upload Tue–Sat:* equals
+- *Pre-AYA-PM upload (Monday evening) and every upload Tue–Sun:* equals
   Monday's $a^{(g)}$, carried forward unchanged through the week.
+- *Partial week:* `"miss"` at every upload (no `dyad_game` decision yet).
 - *Missingness:* `"miss"` at the pre-`dyad_game` Monday upload by
-  construction; never `"miss"` at any subsequent upload in the week (the
-  action is always either `0` or `1`).
+  construction and throughout the partial week; never `"miss"` at any
+  subsequent upload in a week $w \geq 1$ (the action is always either `0` or
+  `1`).
 
 **`prior_game_action`** — `binary_or_miss`. The action chosen at the
 **most-recently-completed** `dyad_game` decision — the feature read by
@@ -1169,11 +1261,11 @@ the `dyad_game` learner at this Monday's decision.
 - *Pre-`dyad_game` upload (Monday morning of week $w \geq 2$):* equals
   the action returned by week $w - 1$'s `dyad_game` /action.
 - *All subsequent uploads in week $w$ (pre-AYA-AM, pre-CP, pre-AYA-PM,
-  through Saturday evening):* unchanged from the pre-`dyad_game` value —
+  through Sunday evening):* unchanged from the pre-`dyad_game` value —
   the host does **not** advance `prior_game_action` to the action just
   decided. Advancement happens only at week $w + 1$'s pre-`dyad_game`
   upload.
-- *Missingness:* `"miss"` in study week 1 (no previous week's `dyad_game`
+- *Missingness:* `"miss"` in the partial week and study week 1 (no previous week's `dyad_game`
   decision exists).
 
 **`aya_diary_summary`** — `unit_interval_or_miss`. Weekly aggregate of the AYA's
@@ -1225,7 +1317,9 @@ relationship score, used as the basis for the `dyad_game` reward.
 - *Missingness:* `0.0` whenever `weekly_survey_completed = false` (the
   learner ignores it).
 
-[TODO: add something about how active the users are in the game]
+> **Open item — game activity.** Whether game-use analytics should be uploaded,
+> and whether they are monitoring-only or an RL input, remains intentionally
+> undecided. No game-activity field is part of the contract yet.
 
 ---
 
@@ -1263,14 +1357,14 @@ so the action can be replayed deterministically.
 | `decision_idx` | int | per-`(dyad, decision_type)` decision counter; component of the idempotency key |
 | `decision_type` | string | `aya_message` / `cp_message` / `dyad_game` |
 | `raw_context` | JSON | the per-agent context used at decision time — projected at action time from the dyad's latest values in `data_uploads`. Recorded explicitly so the decision is reproducible even if later uploads overwrite individual fields. |
-| `state` | JSON | the state/feature vector scored at decision time; echoed to the `/action` response as `state` (§2.2) |
+| `state` | JSON (nullable) | decision-time state when available; `NULL` for scheduled warm-up and when state construction failed |
 | `action` | int | chosen action ∈ {0, 1} |
 | `action_prob` | float | Pr(action = 1), regardless of the chosen action; always `0.5` on warm-up rows |
 | `is_warmup` | bool | `true` if this decision was a `Bernoulli(0.5)` warm-up draw (learner bypassed), per §2.2 |
-| `warmup_reason` | string (nullable) | `cohort` / `week1` on warm-up rows; `NULL` otherwise |
+| `warmup_reason` | string (nullable) | `cohort` / `week1` / `no_state` / `no_policy` / `learner_error` / `invalid_probability` when `is_warmup = true`; `NULL` otherwise |
 | `model_param` | JSON (nullable) | the flat model-parameter vector the learner scored to produce `action_prob`, stored opaquely; echoed to the `/action` response as `model_param` and returned verbatim on the idempotent replay (§2.2). `NULL` on warm-up rows and for learners that expose no such vector. |
 | `random_state` | JSON | sample-buffer cursor positions for this draw (for replay) |
-| `model_parameters_id` | int (FK) | which `model_parameters` row was used |
+| `model_parameters_id` | int (nullable FK) | policy used; `NULL` when no learner policy was scored |
 | `request_timestamp` | datetime | timestamp the host stamped on the `/action` request |
 | `timestamp` | datetime | server-side row timestamp |
 
@@ -1433,10 +1527,14 @@ columns below are those the host-facing feed reads.
 | `event_id` | string (unique) | stable alarm identity; the `/monitor/alarms` record key |
 | `item_id` | string | which monitoring item fired. The item catalogue is maintained outside this document; the API contract treats this as an opaque label. |
 | `severity` | string | `red` / `yellow` / `green`, after the monitoring layer's escalation rules |
+| `owner` | string | `host` / `rl` |
 | `message` | string | human-readable summary served verbatim |
 | `detail` | JSON | item-specific context (value, threshold, affected dyads); carries no participant data |
-| `raised_at` | datetime | when the monitoring layer raised the alarm; the column the `since` window filters on (indexed) |
+| `raised_at` | datetime | when the monitoring layer raised the alarm; indexed and returned to the host |
 | `created_at` | datetime | row creation timestamp |
+
+Alarm and error-event rows are never automatically deleted. They remain in
+the database and in study exports under the study's data-retention policy.
 
 ### 5.11 `monitor_pulls`
 
@@ -1448,7 +1546,7 @@ the missed-pull condition described in §2.5.
 | Column | Type | Notes |
 |---|---|---|
 | `rid` | string (unique) | per-call `rid` returned in the `/monitor/alarms` response |
-| `since` | datetime (nullable) | lower bound applied — the request's `since`, or the computed 24 h default; `NULL` if the request failed validation |
+| `window_start` | datetime | `server_timestamp - 24 hours` for this pull |
 | `returned_count` | int (nullable) | number of alarms returned; `NULL` on failure |
 | `status` | int | HTTP status returned |
 | `created_at` | datetime | row creation timestamp |
@@ -1470,27 +1568,24 @@ study from a buffer + snapshot/exports and asserts a bit-for-bit match.
 ## 7. Failure handling & fallback
 
 - **Idempotency:** a repeated `(group_id, decision_type, decision_idx)` on
-  `/action` is rejected, so host retries are safe. `/upload_data` is
+  `/action` replays the original saved decision, so host retries are safe. `/upload_data` is
   append-only and has no idempotency key — re-posting the same values writes
   a new row but is harmless (the latest-values store is unchanged).
-- **At least one `/upload_data` before `/action`.** If a dyad
-  has zero `data_uploads` rows when `/action` is called, the API returns
-  `409`. The host is responsible for ensuring the first upload happens
-  before the first action. Once the dyad has any upload history, subsequent
-  `/action` calls succeed even if some fields are missing — they are masked.
+- **No state before `/action`.** If a registered dyad has no uploaded state,
+  the API returns a saved, reproducible 50/50 decision with `warmup = true`,
+  `state = null`, and `model_param = null`, then raises one yellow host-owned
+  alarm. It does not return `409`.
 - **No corrections.** The host never re-sends corrected values for a past
   upload; every upload is simply the latest snapshot. A measurement that
   arrives late on the host side appears in the next scheduled upload and is
   picked up at the next `/update`.
-- **Missed `/update`.** The monitoring algorithm should re-ping if a
+- **Missed `/update`.** The host re-sends `/update` if a
   scheduled update is missed; the API itself does not schedule.
-- **Missed alarm pull.** No alarm is lost: `/monitor/alarms` is a window over
-  persisted state (§5.10), not a queue that drains. A host that skips days
-  recovers the full backlog on its next call by sending its last successful
-  pull time as `since` (§2.5). The failure mode to guard against is the
-  *silent* one —
-  the host never pulling at all — which is why a successful pull returning
-  zero alarms is reported distinctly from no pull.
+- **Missed alarm pull.** `/monitor/alarms` always returns the preceding 24
+  hours from persisted state (§5.10), not a queue that drains. Twice-daily
+  pulls overlap and are deduplicated by `event_id`. A gap longer than 24 hours
+  can no longer be recovered through this endpoint, although older alarms
+  remain stored and exported. E6 flags a 24-hour gap.
 - **API unreachable:** the host draws `Bernoulli(0.5)` locally for that
   decision and records `action_prob = 0.5`. The API has no record of such
   decisions, so they never enter model fits (the fit uses only API-issued
@@ -1510,25 +1605,16 @@ last good parameters.
 | sanity-gate failure | fit not published; previous parameters stay active; request marked `failed` |
 | empty batch | fit skipped; previous parameters stay active; request marked `completed` |
 | per-action reward-derivation error | that action skipped (`reward = NULL`); the rest derived |
-| background-thread crash / timeout | request stays `processing`; monitoring re-triggers; previous parameters stay active |
+| background-thread crash / timeout | request marked failed; previous parameters stay active for the full week |
 
 ---
 
-## 8. Open items (to resolve with the dev team)
+## 8. Remaining open item
 
-1. **Scheduling robustness:** timezone/DST handling for per-dyad decision
-   windows, and the guarantee that the weekly `/update` completes before the
-   first `/action` of the week.
-2. **Authentication on `/monitor/alarms`.** The feed exposes cross-dyad
-   operational state and is the one endpoint whose *response* is worth reading
-   by an unauthorized caller. No shared-secret check is enforced on any
-   endpoint today; if one is added, this endpoint should be in scope.
-3. **Pull cadence and retention.** Daily is the assumed cadence (§3), and
-   `since` defaults to 24 h to match it. How long `monitor_alarms` rows are
-   retained — and therefore how far back a `since` can reach — is not yet
-   fixed. Nor is whether a very large window needs paging; the current contract
-   returns the whole window in one response.
-4. **Push option.** Only the pull direction is specified here. Whether red
-   alarms should additionally be pushed to a host-provided sink, rather than
-   waiting up to a day for the next pull, is a joint decision with the dev
-   team.
+**Game activity.** Whether game-use analytics should be added to
+`/upload_data`, and whether they are monitoring-only or an RL input, remains
+undecided (§4.1). All other host-contract decisions in this revision are
+fixed: `America/Detroit` is the study timezone; 05:45 is the hard weekly
+policy-publication deadline; alarms are pull-only at 05:50 and 17:50; the API
+has no application-layer API key; and alarm and error records are retained
+without automatic deletion.

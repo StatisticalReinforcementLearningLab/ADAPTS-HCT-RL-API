@@ -2,8 +2,9 @@
 Per-dyad week-1 standardization (main.tex §3, "Variable Standardization").
 
 For each dyad and each agent stream, baselines (mu, sigma) for continuous
-variables are estimated once from the dyad's first calendar week alone and
-stored in the StandardizationBaseline table. Subsequent action and update
+variables are estimated once from the dyad's partial week (if it enrolled on a
+non-Monday) and first calendar week, and stored in the StandardizationBaseline
+table. Subsequent action and update
 calls look up these baselines and apply them inside the feature builder.
 
 If a dyad has no recorded baselines yet (week 1 in progress, or warmup
@@ -100,10 +101,18 @@ def compute_week1_baselines_for_dyad(
 
 
 def filter_week1_records(records: Iterable[dict]) -> list[dict]:
-    """Subset of records whose `raw_context["week_in_study"]` is 1."""
+    """
+    Records of the dyad's partial week (`week_in_study` 0) and week 1, the
+    baseline window of main_new.tex §5.2. Returns [] until week-1 records
+    exist: /update runs Monday 03:00, before week 1's first decision, so
+    week-1 records first reach an update once week 1 has ended, and baselines
+    are never fixed from a partial week alone.
+    """
     out = []
     for r in records:
-        ctx = r.get("raw_context") or {}
-        if int(ctx.get("week_in_study", 0)) == 1:
+        week = (r.get("raw_context") or {}).get("week_in_study")
+        if week is not None and int(week) in (0, 1):
             out.append(r)
+    if not any(int(r["raw_context"]["week_in_study"]) == 1 for r in out):
+        return []
     return out

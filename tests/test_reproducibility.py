@@ -7,6 +7,8 @@ for every decision.
 """
 from __future__ import annotations
 
+import datetime
+
 import numpy as np
 import pytest
 
@@ -22,17 +24,45 @@ def _action(client, gid, idx, dt, ts):
     )
 
 
-def _setup_nonwarmup_dyad(client, gid):
-    """Register enough dyads to clear the cohort gate and rack up 6 cp_message
-    decisions for `gid` so it clears the week-1 gate (API-Spec §2.2)."""
+def _setup_learned_dyad(client, gid):
+    """Install a real week-2 design policy after both current warm-up gates."""
+    from app.models import ModelParameters, PolicyVersion
+
     for i in range(5):
         register_group(client, f"seed_{i:02d}")
-    register_group(client, gid)
-    for k in range(6):
-        ts_day = f"2026-01-{5 + k:02d}"
-        upload(client, gid, f"{ts_day}T05:00:00", slot="am", day_in_study=k + 1)
-        r = _action(client, gid, k, "cp_message", f"{ts_day}T06:00:00")
-        assert r.status_code == 201
+    if gid not in {f"seed_{i:02d}" for i in range(5)}:
+        register_group(client, gid)
+    assert upload(client, gid, "2026-01-13T08:00:00").status_code == 201
+    with client.application.app_context():
+        hp = client.application.hyperparams
+        version = PolicyVersion(
+            "aya_message",
+            datetime.date(2026, 1, 12),
+            "repro-update",
+            PolicyVersion.STATUS_PUBLISHED,
+            published_at=datetime.datetime(2026, 1, 12, 3, 5),
+            published_at_study=datetime.datetime(2026, 1, 12, 3, 5),
+            hyperparams_hash=hp.sha256,
+            n_dyads=1,
+        )
+        db.session.add(version)
+        db.session.flush()
+        alpha = [0.10, -0.05, 0.08, 0.03]
+        covariance = (np.eye(4) * 0.02).tolist()
+        posterior = ModelParameters(
+            snapshot_type="posterior",
+            group_id=gid,
+            decision_type="aya_message",
+            theta=alpha,
+            covariance=covariance,
+            study_week_monday=datetime.date(2026, 1, 12),
+            policy_version_id=version.id,
+            update_rid="repro-update",
+            hyperparams_hash=hp.sha256,
+        )
+        db.session.add(posterior)
+        db.session.commit()
+    return np.asarray(alpha), np.asarray(covariance)
 
 
 class TestWarmupDeterminism:
@@ -66,14 +96,13 @@ class TestWarmupDeterminism:
 
 
 class TestNonWarmupDeterminism:
-    """A non-warmup action under probit-TS consumes ONE uniform and zero normals."""
+    """A learned design action consumes one uniform and no runtime normals."""
 
     def test_standard_action_cursor_stamped(self, client):
         from app.models import Action
 
-        _setup_nonwarmup_dyad(client, "repro_dyad_002")
-        upload(client, "repro_dyad_002", "2026-01-12T08:00:00", day_in_study=7)
-        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-12T09:00:00")
+        _setup_learned_dyad(client, "repro_dyad_002")
+        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-13T09:00:00")
         assert r.status_code == 201
         assert r.json["warmup"] is False
 
@@ -81,7 +110,7 @@ class TestNonWarmupDeterminism:
             row = Action.query.filter_by(
                 group_id="repro_dyad_002", decision_type="aya_message", decision_idx=1
             ).first()
-            assert row.random_state["mode"] == "probit_ts"
+            assert row.random_state["mode"] == "learned"
             normal_delta = (
                 row.random_state["sampler_cursor_end"]["normal"]
                 - row.random_state["sampler_cursor_start"]["normal"]
@@ -94,38 +123,27 @@ class TestNonWarmupDeterminism:
             assert uniform_delta == 1
 
 
-class TestClosedFormActionProb:
-    """Action prob is the exact probit-TS marginal under the block-diagonal prior."""
+class TestDesignActionProb:
+    """Action probability is the design's fixed-bank allocation exactly."""
 
-    def test_action_prob_matches_closed_form(self, client):
-        from app.deterministic_sampler import closed_form_action_prob
-        from app.feature_builder import ProtocolRLFeatureBuilder
-        from app.algorithms.empirical_bayes import _prior_covariance, ETA_BY_AGENT
+    def test_action_prob_matches_fixed_bank_allocation(self, client):
+        from app.learner.features import hf_from_design_state
+        from app.learner.policy import probability_at
 
-        _setup_nonwarmup_dyad(client, "repro_dyad_002")
-        upload(client, "repro_dyad_002", "2026-01-12T08:00:00", day_in_study=7)
-        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-12T09:00:00")
+        alpha, covariance = _setup_learned_dyad(client, "repro_dyad_002")
+        r = _action(client, "repro_dyad_002", 1, "aya_message", "2026-01-13T09:00:00")
         data = r.get_json()
         assert data["warmup"] is False
 
-        fb = ProtocolRLFeatureBuilder("aya_message")
-        # state is no longer returned in the response; read it from the DB.
         from app.models import Action
         with client.application.app_context():
             row = Action.query.filter_by(
                 group_id="repro_dyad_002", decision_type="aya_message", decision_idx=1
             ).first()
-            state = np.asarray(row.state, dtype=np.float64)
-        mean = np.zeros(fb.phi_dim)
-        cov = _prior_covariance("aya_message")
-        eta = ETA_BY_AGENT["aya_message"]
-        expected_prob_1 = closed_form_action_prob(
-            state, mean, cov, fb.expand_base_to_phi, eta=eta
-        )
-        if data["action"] == 1:
-            assert data["action_prob"] == pytest.approx(expected_prob_1)
-        else:
-            assert data["action_prob"] == pytest.approx(1.0 - expected_prob_1)
+            _, f = hf_from_design_state("aya_message", row.raw_context["design_state"])
+            expected, mu, variance = probability_at("aya_message", f, alpha, covariance)
+        assert data["action_prob"] == expected
+        assert row.mu == mu and row.v == variance
 
 
 class TestEndToEndReproducibility:

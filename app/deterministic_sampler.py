@@ -19,6 +19,13 @@ Design:
   with the original buffer file, this is sufficient to deterministically
   replay the algorithm.
 
+Monte Carlo bank (main_new.tex eq. (alloc-mc); Hyperparameters.md §5.4;
+contract D10): the allocation probability averages rho over a fixed bank of
+``M`` standard normals drawn once from the dedicated seed
+``allocation.mc_seed``: ``np.random.default_rng(mc_seed).standard_normal(M)``.
+The bank is stored in the same ``.npz`` file by ``flask init-buffer`` and is
+separate from the consumable streams: reading it never moves a cursor.
+
 Multivariate sampling uses
 ``y = mean + L @ z`` where ``L = U sqrt(D)`` from the eigendecomposition of
 ``cov`` (``eigh``). We choose eigh over Cholesky to (a) match the existing
@@ -47,6 +54,8 @@ class DeterministicSampleStream:
     META_NORMAL_CURSOR = "normal_cursor"
     META_UNIFORM_CURSOR = "uniform_cursor"
     META_SEED = "seed"
+    MC_BANK_KEY = "mc_bank"
+    META_MC_SEED = "mc_seed"
 
     def __init__(
         self,
@@ -55,6 +64,8 @@ class DeterministicSampleStream:
         normal_cursor: int = 0,
         uniform_cursor: int = 0,
         seed: int | None = None,
+        mc_bank: np.ndarray | None = None,
+        mc_seed: int | None = None,
     ):
         self._normals = np.asarray(normals, dtype=np.float64)
         self._uniforms = np.asarray(uniforms, dtype=np.float64)
@@ -72,6 +83,13 @@ class DeterministicSampleStream:
         self._uniform_cursor = int(uniform_cursor)
         self._seed = seed
         self._lock = threading.Lock()
+        self._mc_bank: np.ndarray | None = None
+        self._mc_seed: int | None = None
+        self._mc_cache: dict[tuple[int, int], np.ndarray] = {}
+        if mc_bank is not None:
+            if mc_seed is None:
+                raise ValueError("mc_bank requires its mc_seed")
+            self._set_bank(np.asarray(mc_bank, dtype=np.float64), int(mc_seed))
 
     # ------------------------------------------------------------ properties
 
@@ -159,6 +177,57 @@ class DeterministicSampleStream:
         L = _eigh_sqrt(cov)
         return mean + L @ z
 
+    # ------------------------------------------------- Monte Carlo bank
+
+    def _set_bank(self, bank: np.ndarray, seed: int) -> None:
+        if bank.ndim != 1 or bank.size == 0:
+            raise ValueError("mc_bank must be a non-empty 1-D array")
+        bank = bank.copy()
+        bank.setflags(write=False)
+        self._mc_bank = bank
+        self._mc_seed = int(seed)
+
+    def set_mc_bank(self, seed: int, M: int) -> np.ndarray:
+        """
+        Generate and store the Monte Carlo bank
+        ``np.random.default_rng(seed).standard_normal(M)`` (persisted by
+        :meth:`save`). Does not touch the consumable streams.
+        """
+        if int(M) <= 0:
+            raise ValueError("M must be positive")
+        bank = np.random.default_rng(int(seed)).standard_normal(int(M)).astype(np.float64)
+        with self._lock:
+            self._set_bank(bank, int(seed))
+            return self._mc_bank
+
+    @property
+    def mc_bank_info(self) -> dict[str, int] | None:
+        """``{"mc_seed", "mc_samples"}`` of the stored bank, or ``None``."""
+        if self._mc_bank is None:
+            return None
+        return {"mc_seed": int(self._mc_seed), "mc_samples": int(self._mc_bank.size)}
+
+    def get_mc_bank(self, seed: int, M: int) -> np.ndarray:
+        """
+        The Monte Carlo bank for ``(seed, M)`` (contract D10): the stored bank
+        when its seed and size match, else
+        ``np.random.default_rng(seed).standard_normal(M)`` (identical values,
+        cached). Never consumes the buffer streams; the returned array is
+        read-only.
+        """
+        seed, M = int(seed), int(M)
+        if M <= 0:
+            raise ValueError("M must be positive")
+        with self._lock:
+            if self._mc_bank is not None and self._mc_seed == seed and self._mc_bank.size == M:
+                return self._mc_bank
+            cached = self._mc_cache.get((seed, M))
+            if cached is None:
+                cached = np.random.default_rng(seed).standard_normal(M).astype(np.float64)
+                cached.setflags(write=False)
+                self._mc_cache[(seed, M)] = cached
+            return cached
+
     # -------------------------------------------------------- persistence
 
     def save(self, path: str) -> str:
@@ -174,6 +243,9 @@ class DeterministicSampleStream:
             }
             if self._seed is not None:
                 payload[self.META_SEED] = np.int64(self._seed)
+            if self._mc_bank is not None:
+                payload[self.MC_BANK_KEY] = self._mc_bank
+                payload[self.META_MC_SEED] = np.int64(self._mc_seed)
         np.savez(path, **payload)
         # numpy auto-appends .npz if missing
         if not path.endswith(".npz"):
@@ -186,6 +258,7 @@ class DeterministicSampleStream:
             path = path + ".npz"
         data = np.load(path)
         seed = int(data[cls.META_SEED]) if cls.META_SEED in data.files else None
+        has_bank = cls.MC_BANK_KEY in data.files and cls.META_MC_SEED in data.files
         return cls(
             normals=data[cls.NORMAL_KEY],
             uniforms=data[cls.UNIFORM_KEY],
@@ -196,6 +269,8 @@ class DeterministicSampleStream:
             if cls.META_UNIFORM_CURSOR in data.files
             else 0,
             seed=seed,
+            mc_bank=data[cls.MC_BANK_KEY] if has_bank else None,
+            mc_seed=int(data[cls.META_MC_SEED]) if has_bank else None,
         )
 
     @classmethod
@@ -204,14 +279,23 @@ class DeterministicSampleStream:
         n_normals: int,
         n_uniforms: int,
         seed: int,
+        mc_seed: int | None = None,
+        mc_samples: int | None = None,
     ) -> "DeterministicSampleStream":
-        """Generate a fresh buffer from a single seed."""
+        """
+        Generate a fresh buffer from a single seed. With ``mc_seed`` and
+        ``mc_samples`` the Monte Carlo bank is generated and stored too (its
+        own generator; the streams are unchanged by it).
+        """
         if n_normals <= 0 or n_uniforms <= 0:
             raise ValueError("n_normals and n_uniforms must be positive")
         rng = np.random.default_rng(seed)
         normals = rng.standard_normal(n_normals).astype(np.float64)
         uniforms = rng.random(n_uniforms).astype(np.float64)
-        return cls(normals=normals, uniforms=uniforms, seed=int(seed))
+        stream = cls(normals=normals, uniforms=uniforms, seed=int(seed))
+        if mc_seed is not None and mc_samples is not None:
+            stream.set_mc_bank(int(mc_seed), int(mc_samples))
+        return stream
 
 
 def _eigh_sqrt(cov: np.ndarray, jitter: float = 1e-12) -> np.ndarray:
