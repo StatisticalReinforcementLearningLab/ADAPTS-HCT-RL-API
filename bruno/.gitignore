@@ -4,6 +4,9 @@
 # Dependencies
 node_modules
 
+# Local runtime output
+*.log
+
 # OS files
 .DS_Store
 Thumbs.db

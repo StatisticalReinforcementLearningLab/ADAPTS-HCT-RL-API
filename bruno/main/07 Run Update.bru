@@ -1,0 +1,21 @@
+meta {
+  name: Run Update
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{base_url}}/api/v1/update
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "timestamp": "{{timestamp}}"
+  }
+}
+
+assert {
+  res.status: eq 202
+}

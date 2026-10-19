@@ -1,0 +1,46 @@
+meta {
+  name: Register Group
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/api/v1/register_group
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "group_id": "{{group_id}}",
+    "member_list": ["aya_001", "cp_001"],
+    "consent_start_date": "{{consent_start_date}}",
+    "consent_end_date": "{{consent_end_date}}"
+  }
+}
+
+script:pre-request {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  const formatDate = (date) =>
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const start = formatDate(now);
+  const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 100);
+  const end = formatDate(endDate);
+  const weekday = now.getDay();
+
+  bru.setVar("group_id", "bruno_dyad_" + Date.now());
+  bru.setVar("consent_start_date", start);
+  bru.setVar("consent_end_date", end);
+  bru.setVar("timestamp", `${start}T08:00:00`);
+  bru.setVar("week_in_study", weekday === 1 ? 1 : 0);
+}
+
+assert {
+  res.status: eq 201
+}
+
+settings {
+  encodeUrl: true
+  timeout: 10000
+}
