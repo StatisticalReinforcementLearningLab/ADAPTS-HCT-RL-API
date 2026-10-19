@@ -217,7 +217,11 @@ def test_a16_fires_on_delivery_mismatches(mon_app):
     add_dyad("d1", MON1)
     add_action("d1", AYA, 0, at(MON2, 7, 30), action=1, ds=design_state(AYA, slot="am"))
     add_action("d1", CP, 0, at(MON2, 7, 35), action=0)
-    add_upload("d1", at(MON2, 19, 25), {"slot": "pm", "prompted_by_message": False, "cp_prompted_by_message": True})
+    add_upload(
+        "d1",
+        at(MON2, 19, 25),
+        {"slot": "pm", "previous_med_adherence": 1, "prompted_by_message": False, "cp_prompted_by_message": True},
+    )
     found = decisions.check_a16(ctx(at(D(2026, 1, 14), 7, 0)))
     assert keys(found) == ["A16:2026-01-14"]
     assert found[0].detail["kinds"] == {"action_1_not_delivered": 1, "action_0_delivered": 1}
@@ -236,7 +240,22 @@ def test_a16_quiet_when_deliveries_match(mon_app):
     add_dyad("d1", MON1)
     add_action("d1", AYA, 0, at(MON2, 7, 30), action=1, ds=design_state(AYA, slot="am"))
     add_action("d1", CP, 0, at(MON2, 7, 35), action=0)
-    add_upload("d1", at(MON2, 19, 25), {"slot": "pm", "prompted_by_message": True, "cp_prompted_by_message": False})
+    add_upload(
+        "d1",
+        at(MON2, 19, 25),
+        {"slot": "pm", "previous_med_adherence": 1, "prompted_by_message": True, "cp_prompted_by_message": False},
+    )
+    assert decisions.check_a16(ctx(at(D(2026, 1, 14), 7, 0))) == []
+
+
+def test_a16_skips_aya_per_mtw_comparison_when_adherence_is_missing(mon_app):
+    add_dyad("d1", MON1)
+    add_action("d1", AYA, 0, at(MON2, 7, 30), action=1, ds=design_state(AYA, slot="am"))
+    add_upload(
+        "d1",
+        at(MON2, 19, 25),
+        {"slot": "pm", "previous_med_adherence": "miss", "prompted_by_message": False},
+    )
     assert decisions.check_a16(ctx(at(D(2026, 1, 14), 7, 0))) == []
 
 

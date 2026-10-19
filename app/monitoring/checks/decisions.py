@@ -546,6 +546,12 @@ def check_a16(ctx: CheckContext) -> list[Finding]:
             continue
         if upload is None:
             continue
+        # API-Spec §4.1 requires the AYA delivery flag to be false when the
+        # corresponding adherence response is missing. In that case the
+        # per-MTW field deliberately carries no delivery information, so A16
+        # relies on the weekly delivery counts instead.
+        if action.decision_type == AYA and (upload.data or {}).get("previous_med_adherence") in (None, "miss"):
+            continue
         flag = (upload.data or {}).get(flag_field)
         if not isinstance(flag, bool):
             continue
