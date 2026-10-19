@@ -1,6 +1,6 @@
 # ADAPTS-HCT RL API — Monitoring Specification
 
-> **Status: decisions incorporated, 2026-10-15.** This document is meant to replace
+> **Status: decisions incorporated, updated 2026-10-19.** This document is meant to replace
 > `Overleaf/Monitoring_Algorithm/monitoring.tex` (2026-08-03),
 > `Overleaf/Monitoring_Algorithm/monitoring_items.tex` (2026-08-12),
 > `Algorithm-Monitoring.md`, and `Monitoring_Algorithm/PLAN.md`. It agrees
@@ -177,7 +177,7 @@ Each table has two kinds of rows:
 |---|---|---|---|---|---|
 | **A13** new | red | rl | **π out of range.** A learned decision has π below L_min, above L_max, or not a number; or a warm-up decision has π other than 0.5. The design makes both impossible, so any detection means a bug in the algorithm. It stays red even though F-A2 protects the participant, because one bad π suggests the algorithm may be wrong for every dyad. | inside `/action` | F-A2 |
 | **A4** rev | red | rl | **Each decision can be reproduced.** Every night, redo yesterday's decisions from saved data and compare: (1) for each learned decision, recompute π from the saved policy (α^EB, Σ^EB), the saved state f(s), and the fixed set of random draws used to compute π; it must match the recorded π to within 1e-12; (2) for every decision, recompute the action from its saved random number (A = 1 if u < π); it must match the recorded action, and each decision must have used exactly one random number. Fires on any mismatch. | nightly, for all of yesterday's decisions | — |
-| **A10** rev | red | rl | **Warm-up follows the algorithm's rules.** Every night, for each of yesterday's decisions, work out from saved data whether it *should* have been a coin flip, and compare with what was recorded (`is_warmup`, `warmup_reason`). Should be a coin flip if: (a) fewer than N_warm dyads had their enr_i on or before that study week's Monday (cohort rule; dates from `group_history`), or (b) the decision falls in the dyad's own partial week or week 1 (first-week rule). Otherwise it should use the learned policy. **Red:** a decision that should have been a coin flip used a learned π. That breaks the coin-flip weeks that σ̂² depends on. Operational fallbacks (`no_state`, `no_policy`, `learner_error`, `invalid_probability`) are reported by the corresponding `AC-201-*` alarm, not by A10. | nightly, for all of yesterday's decisions | — |
+| **A10** rev | red | rl | **Warm-up follows the algorithm's rules.** Every night, for each of yesterday's decisions, work out from saved data whether it *should* have been a coin flip, and compare with what was recorded (`is_warmup`, `warmup_reason`). Should be a coin flip if: (a) fewer than N_warm dyads had their enr_i on or before that study week's Monday (cohort rule; dates from `group_history`), or (b) the decision falls in the dyad's own partial week or week 1 (first-week rule). Otherwise it should use the learned policy. **Red:** a decision that should have been a coin flip used a learned π. This violates the prespecified warm-up design. Operational fallbacks (`no_state`, `no_policy`, `learner_error`, `invalid_probability`) are reported by the corresponding `AC-201-*` alarm, not by A10. | nightly, for all of yesterday's decisions | — |
 | **A6** rev | yellow | rl | **Too many messages.** More than 80% of an agent's scheduled AYA or CP opportunities for a dyad were actually delivered in a completed full study week (weeks 1–14; partial week excluded). Exactly 80% is allowed. Counts come from `aya_messages_delivered_week` and `cp_messages_delivered_week`. | weekly, Monday | — |
 | **A7** rev | yellow | rl | **Too few messages.** Fewer than 20% of an agent's scheduled AYA or CP opportunities for a dyad were actually delivered in a completed full study week (partial week excluded). Exactly 20% is allowed. | weekly, Monday | — |
 | **A16** new | yellow | host | **Delivery does not match the action.** A message action of 1 was not delivered, an action of 0 was followed by a delivery, a delivery has no matching API action, or one action caused duplicate deliveries. The host's uploaded delivery counts and per-MTW delivery fields are compared with saved actions. | daily | — |
@@ -229,7 +229,7 @@ week-closing uploads; the full Monday schedule is in `API-Spec.md` §3.
 | **C3** rev | yellow | rl | **Validity of model parameters.** This is the only check allowed to stop publication. For each agent, before its new policy is published, all of the following must hold; otherwise that agent keeps last week's policy (F-U2). (1) Every fitted number is finite: θ̂_{i,w}, Σ̂_{i,w}, Θ̂_w, τ̂²_w, α^EB_{i,w}, Σ^EB_{i,w}. (2) Σ̂_{i,w} and Σ^EB_{i,w} are valid variance matrices: symmetric, with no eigenvalue below −1e-10 × their trace. (3) Each between-dyad variance is at or above its floor: τ̂²_{w,b} ≥ (1 − 1e-6) × floor_b. (4) Pooling did not increase any variance: the smallest eigenvalue of Σ̂^αα_{i,w} − Σ^EB_{i,w} and of Σ̂_{0,w} − Σ^EB_{i,w} is at least −(ε + 1e-10 × trace), where ε is the numerical ridge of `Hyperparameters.md` §4. (5) The number of parameters matches the design: AYA 7 baseline + 4 effect coefficients, CP 6 + 4, REL 7 + 2. Becomes red if the check fails two weeks in a row for the same agent. | inside the update | F-U2 |
 | **C1** rev | yellow | rl | **Update failed or fell back.** Either the update ended with an error, for any reason other than C3 (which reports itself), or the empirical-Bayes optimizer for the between-dyad parameters returned a non-finite value or hit its iteration limit K_max without converging, so last week's (Θ̂, Σ̂₀) were reused (F-U5). `detail` says which, and for which agent. Red after two weeks in a row for the same agent. How often the optimizer falls back over the trial is reported in G0 and `flask monitor report`. | every 5 min; after each update | F-U2, F-U5 |
 | **C5** rev | yellow | rl | **Update can be rerun exactly**. Rerun the week's update from its saved copy of the data and the same random numbers. Every published result (θ̂, Σ̂, Θ̂, τ̂², α^EB, Σ^EB) must come out identical. (Each decision is reproduced separately by A4.) Red after two weeks in a row. | weekly, Tuesday 02:00 | — |
-| **C10** new | yellow / green | rl | **Noise scale set.** Runs once, at the first learning update. Green: records, per agent, the number of week-1 rewards used, their variance s², the upper limit σ̄², the chosen σ̂², and the resulting τ²₀ values. Yellow: the upper limit was used, either because the variance exceeded it or because there were fewer than two week-1 rewards. | after the first learning update | — |
+| **C10** new | green | rl | **Prespecified noise scale recorded.** The study team fixes each agent's working-model noise variance σ² in `hyperparameters.yaml` before the trial; it is never estimated or updated from trial data. At the first learning update, the API records the configured σ², its design upper bound σ̄², the resulting prior scales τ²₀, and `source = "design"` in `noise_init`. The resolved hyperparameter set is frozen at the same update and protected by C9. Configuration validation rejects a nonpositive σ² or one above σ̄² before the API starts. | after the first learning update | — |
 | `UP-400-PARAM` | yellow | host | **Update request rejected.** `timestamp` is missing. *Host:* fix the weekly update call. | when the endpoint returns it | — |
 | `UP-503-ENQUEUE` | red | rl | **Update could not be started.** Nothing was recorded. *Host:* send `/update` again; do not wait on the returned `rid`. | when the endpoint returns it | — |
 
@@ -627,7 +627,7 @@ without them.
 | `eb_hyper_updates` | C1, C3, L1 | per agent and week: number of dyads N_w, Θ̂, τ̂², floor, converged or not, iterations, largest gradient, fallback used, objective value |
 | `local_fits` | C3, L3 | per agent, week, and dyad: number of decisions, θ̂, Σ̂, spectral norm of G Xᵀ X₊ |
 | `posteriors` | A4, C3, L2 | per agent, week, and dyad: α^EB, Σ^EB, weight on own data |
-| `noise_init` | C10 | per agent: number of week-1 rewards, s², σ̄², σ̂², whether the limit was used, whether there were fewer than two rewards |
+| `noise_init` | C10 | per agent: prespecified σ², design upper bound σ̄², resulting τ²₀ values, `source = "design"`, and the study week when the values were recorded; week-1 reward counts and sample variance are null because noise is not estimated from trial data |
 | `hyperparameter_sets` | C9 | settings versions: version, fingerprint, full settings, frozen time, in force from, reason |
 
 ### 9.6 `group_history`
@@ -712,8 +712,9 @@ that no longer exist (`update_id`, `excluded_from_update`, a dictionary-shaped
    week before learning starts; a second `/update` in the same week (C5 must still match).
 3. **Simulated trial with injected faults.** Run `tests/simulate_adapts_hct.py`
    against the running API for 16 calendar weeks with dyads starting on
-   different Mondays. First with no faults: no red or yellow alarms are
-   expected except C1 (optimizer fallbacks), C10, and the L-checks, as documented. Then once per
+   different Mondays. First with no faults: C10 and the report-only L-checks
+   are expected as green records; C1 may be yellow when the optimizer falls
+   back, as documented. No other red or yellow alarms are expected. Then once per
    fault:
 
 | Injected fault | Expected alarms |
@@ -818,4 +819,4 @@ use 1–5; and REL actions are drawn only by `/action`.
 | Check-list version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-10-11 | First draft of this document. |
-| 0.2 | 2026-10-15 | Incorporated study-team decisions on alarm fields and cadence, fallbacks, delivery checks and weekly limits, retention, timezone, consent-window monitoring, update deadlines, raw scales, and action-time REL draws. |
+| 0.2 | 2026-10-15; documentation corrected 2026-10-19 | Incorporated study-team decisions on alarm fields and cadence, fallbacks, delivery checks and weekly limits, retention, timezone, consent-window monitoring, update deadlines, raw scales, and action-time REL draws. Corrected C10, A10, and `noise_init` wording to reflect the already-implemented design: noise variance is prespecified and is never estimated from week-1 trial data. This correction does not change check behavior or the check-list version. |
