@@ -362,6 +362,8 @@ def check_a10(ctx: CheckContext) -> list[Finding]:
     recorded. Operational fallbacks are reported by ``AC-201-*``, not here.
     """
     hp = ctx.hp
+    from app.learner import action_week
+
     night = (ctx.now - datetime.timedelta(days=1)).date()
     start, end = day_bounds(night)
     timeline = ConsentTimeline.load()
@@ -379,6 +381,7 @@ def check_a10(ctx: CheckContext) -> list[Finding]:
             start_dates(consents),
             n_warm=hp.n_warm,
             t_warm=hp.t_warm,
+            current_study_week=action_week(action),
         )
         recorded = action.warmup_reason if action.is_warmup else None
         kind = None
@@ -392,7 +395,7 @@ def check_a10(ctx: CheckContext) -> list[Finding]:
             by_type[action.decision_type].append({
                 "rid": action.rid, "group_id": action.group_id, "decision_idx": action.decision_idx,
                 "kind": kind, "expected": expected, "recorded_is_warmup": bool(action.is_warmup),
-                "recorded_reason": action.warmup_reason, "study_week": study_week(consent.start, action.request_timestamp),
+                "recorded_reason": action.warmup_reason, "study_week": action_week(action),
             })
     out = []
     for dt in AGENT_ORDER:

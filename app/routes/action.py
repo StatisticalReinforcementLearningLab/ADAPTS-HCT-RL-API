@@ -256,7 +256,7 @@ def _legacy_context(decision_type: str, upload: DataUpload, decision_idx: int) -
         return {"legacy_projection_error": type(exc).__name__}
 
 
-def _scheduled_warmup(group: Group, decision_time) -> str | None:
+def _scheduled_warmup(group: Group, upload: DataUpload, decision_time) -> str | None:
     """``cohort`` (D2, checked first), ``week1`` (D3) or ``None``, with the running warm-up hyperparameters."""
     hp = current_app.hyperparams
     return scheduled_warmup_reason(
@@ -264,6 +264,7 @@ def _scheduled_warmup(group: Group, decision_time) -> str | None:
         decision_time.date(),
         n_warm=hp.n_warm,
         t_warm=hp.t_warm,
+        current_study_week=upload.data["week_in_study"],
     )
 
 
@@ -327,7 +328,7 @@ def _decide_inf_lsvi_eb(
         logger.warning("[Action] build_design_state failed: %s", type(exc).__name__, exc_info=True)
         raw_context["design_state_error"] = f"{type(exc).__name__}: {exc}"
 
-    reason = _scheduled_warmup(group, decision_time)
+    reason = _scheduled_warmup(group, upload, decision_time)
     if reason is not None:
         # Scheduled warm-up: state = null (API-Spec §2.2); the design state
         # stays in raw_context so the decision enters learning (D8).
@@ -420,7 +421,7 @@ def _decide_legacy(
     raw_context = _legacy_context(decision_type, upload, decision_idx)
     base = {"hyperparams_hash": hp.sha256, "raw_context": raw_context, "upload_id": upload.id}
 
-    reason = _scheduled_warmup(group, decision_time)
+    reason = _scheduled_warmup(group, upload, decision_time)
     if reason is not None:
         return Decision(pi=0.5, is_warmup=True, reason=reason, mode=MODE_WARMUP, **base)
 

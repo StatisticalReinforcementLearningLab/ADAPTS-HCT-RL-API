@@ -10,7 +10,7 @@ datetimes):
   calendar) it is :func:`app.clock.study_now` (the latest host
   ``request_timestamp``) or the latest ``monitor_runs.logical_now`` if a
   monitoring run was evaluated at a later logical time, so that alarms a run
-  raised at, e.g., Monday 05:45 are inside the window of a pull made right
+  raised at, e.g., Monday 06:00 are inside the window of a pull made right
   after it.
 - :func:`alarm_time` is the ``raised_at`` written for an alarm whose logical
   event time is known: the logical time in host mode; the server wall clock

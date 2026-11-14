@@ -20,8 +20,8 @@ Snapshot mapping (contract D7):
 - ``relq_dyad``: the completion-weighted dyad summary (eq.
   (reward-rel-quality)), 0 if neither role responded.
 - ``aya_week_mean_level``: the mean AYA level over the dyad's AYA decisions of
-  the previous calendar week (Mon-Sun before the decision's week) whose
-  outcome upload exists by decision time; 0 if none.
+  the previous host-sent study week whose outcome upload exists by decision
+  time; 0 if none.
 - ``eng_avg``, ``burden_avg``, ``dsum_avg``: means over the AYA and CP values
   (``*_diary_summary`` ``"miss"`` -> 0).
 
@@ -38,7 +38,9 @@ from typing import Any
 from app.learner import features as F
 from app.learner.rewards import (
     _number,
+    action_day,
     action_slot,
+    action_week,
     aya_level,
     find_outcome_upload,
     is_missing,
@@ -116,16 +118,15 @@ def _binary_value(data: Mapping, field: str, name: str, imputed: dict) -> float:
 
 def aya_week_mean_level(
     group_id: str,
-    week_monday: datetime.date,
+    week: int | None,
     as_of: datetime.datetime,
     *,
     received_by: datetime.datetime | None = None,
 ) -> tuple[float, int]:
     """
     Mean AYA level (contract D6; main_new.tex eq. (reward-rel-adh)) over the
-    dyad's ``aya_message`` decisions stamped in the calendar week starting
-    ``week_monday`` whose outcome upload (stamped at or before ``as_of`` and,
-    if given, received by server time ``received_by``) exists. Returns
+    dyad's ``aya_message`` decisions whose snapshot ``week_in_study`` is
+    ``week`` and whose outcome upload is available by ``as_of``. Returns
     ``(mean, n_decisions_used)``; the mean is 0 when no decision qualifies.
 
     Used for the REL state (previous week, ``as_of`` = decision time) and for
@@ -133,24 +134,23 @@ def aya_week_mean_level(
     """
     from app.models import Action, DataUpload
 
-    start = datetime.datetime.combine(week_monday, datetime.time.min)
-    end = start + datetime.timedelta(days=7)
-    actions = (
-        Action.query.filter(
+    if week is None:
+        return 0.0, 0
+    actions = [
+        action
+        for action in Action.query.filter(
             Action.group_id == group_id,
             Action.decision_type == F.AYA,
-            Action.request_timestamp >= start,
-            Action.request_timestamp < end,
             Action.request_timestamp < as_of,
         )
         .order_by(Action.request_timestamp.asc(), Action.id.asc())
         .all()
-    )
+        if action_week(action) == int(week)
+    ]
     if not actions:
         return 0.0, 0
     q = DataUpload.query.filter(
         DataUpload.group_id == group_id,
-        DataUpload.request_timestamp > start,
         DataUpload.request_timestamp <= as_of,
     )
     if received_by is not None:
@@ -158,7 +158,10 @@ def aya_week_mean_level(
     uploads = q.order_by(DataUpload.request_timestamp.asc(), DataUpload.id.asc()).all()
     levels: list[int] = []
     for action in actions:
-        outcome = find_outcome_upload(F.AYA, action_slot(action), action.request_timestamp, None, uploads)
+        slot, day = action_slot(action), action_day(action)
+        if slot is None or day is None:
+            continue
+        outcome = find_outcome_upload(F.AYA, slot, day, None, uploads)
         if outcome is not None:
             levels.append(aya_level((outcome.data or {}).get("previous_med_adherence")))
     if not levels:
@@ -225,10 +228,9 @@ def build_design_state(
         )
         if is_missing(data.get("relationship_quality_aya")) and is_missing(data.get("relationship_quality_cp")):
             imputed["relq_dyad"] = "miss:relationship_quality_aya,relationship_quality_cp->0"
-        from app.study_calendar import week_monday
-
-        prev_monday = week_monday(decision_time) - datetime.timedelta(days=7)
-        mean_level, n_used = aya_week_mean_level(group_id, prev_monday, decision_time)
+        week = _number(data.get("week_in_study"))
+        prev_week = int(week) - 1 if week is not None else None
+        mean_level, n_used = aya_week_mean_level(group_id, prev_week, decision_time)
         extra["aya_week_mean_level_n"] = n_used
         eng_aya = _system_value(group_id, upload, data, "aya_app_engagement", "eng_aya", 1.0, imputed)
         eng_cp = _system_value(group_id, upload, data, "cp_app_engagement", "eng_cp", 1.0, imputed)

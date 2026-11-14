@@ -158,7 +158,6 @@ def test_engagement_locf_and_default(learner_app):
 
 def test_rel_design_state_with_previous_week_mean_level(learner_app):
     add_group("d1", datetime.date(2026, 1, 5))
-    prev_mon = datetime.date(2026, 1, 5)
     # Four AYA decisions in the previous week; three have outcome uploads by
     # decision time (levels 2, 1, 0). The last is a Sunday AM decision whose
     # outcome (a pm upload) never arrives; the Monday 06:00 upload is "am".
@@ -169,16 +168,17 @@ def test_rel_design_state_with_previous_week_mean_level(learner_app):
         datetime.datetime(2026, 1, 11, 7, 30),
     ]
     for i, ts in enumerate(times):
-        add_action("d1", F.AYA, i, ts, action=0, action_prob=0.5, design_state=None, slot=None)
-    add_upload("d1", datetime.datetime(2026, 1, 6, 19, 25), snapshot(slot="pm", previous_med_adherence=1))
-    add_upload("d1", datetime.datetime(2026, 1, 7, 19, 25), snapshot(slot="pm", previous_med_adherence=0))
-    add_upload("d1", datetime.datetime(2026, 1, 8, 19, 25), snapshot(slot="pm", previous_med_adherence="miss"))
+        ds = {"slot": "am", "day_in_study": ts.day - 4, "week_in_study": 1}
+        add_action("d1", F.AYA, i, ts, action=0, action_prob=0.5, design_state=ds)
+    add_upload("d1", datetime.datetime(2026, 1, 6, 19, 25), snapshot(day_in_study=2, slot="pm", previous_med_adherence=1))
+    add_upload("d1", datetime.datetime(2026, 1, 7, 19, 25), snapshot(day_in_study=3, slot="pm", previous_med_adherence=0))
+    add_upload("d1", datetime.datetime(2026, 1, 8, 19, 25), snapshot(day_in_study=4, slot="pm", previous_med_adherence="miss"))
     decision = datetime.datetime(2026, 1, 12, 6, 0)
     up = add_upload(
         "d1",
         decision,
         snapshot(
-            week_in_study=2,
+            day_in_study=8, week_in_study=2,
             relationship_quality_aya=3.0,
             relationship_quality_cp=4.5,
             aya_app_engagement=2,
@@ -190,7 +190,7 @@ def test_rel_design_state_with_previous_week_mean_level(learner_app):
             cp_diary_summary="miss",
         ),
     )
-    level, n = learner.aya_week_mean_level("d1", prev_mon, decision)
+    level, n = learner.aya_week_mean_level("d1", 1, decision)
     assert (level, n) == (1.0, 3)
     ds = learner.build_design_state("d1", F.REL, up, decision)
     # relq_dyad = (1/3 * 3 + 2/3 * 4.5) / 1 = 4.0
@@ -271,8 +271,8 @@ def test_rel_reward_with_adherence_weight_and_unnormalized():
 # ----------------------------------------------------------------- pairing
 
 
-def _up(ts, slot, week=1):
-    return {"request_timestamp": ts, "data": {"slot": slot, "week_in_study": week}}
+def _up(ts, slot, day, week=1):
+    return {"request_timestamp": ts, "data": {"slot": slot, "day_in_study": day, "week_in_study": week}}
 
 
 def test_pairing_aya_am_to_pm_and_pm_to_next_am_including_week_closing():
@@ -280,21 +280,33 @@ def test_pairing_aya_am_to_pm_and_pm_to_next_am_including_week_closing():
     mon = datetime.date(2026, 1, 19)
     at = lambda d, h, m: datetime.datetime.combine(d, datetime.time(h, m))  # noqa: E731
     timeline = [
-        _up(at(sun, 7, 25), "am"),
-        _up(at(sun, 7, 33), "am"),
-        _up(at(sun, 19, 25), "pm"),
-        _up(at(mon, 2, 0), "am", week=2),  # week-closing upload
-        _up(at(mon, 6, 0), "am", week=2),
-        _up(at(mon, 7, 25), "am", week=2),
+        _up(at(sun, 7, 25), "am", 14),
+        _up(at(sun, 7, 33), "am", 14),
+        _up(at(sun, 19, 25), "pm", 14),
+        _up(at(mon, 2, 0), "am", 15, week=2),  # week-closing upload
+        _up(at(mon, 6, 0), "am", 15, week=2),
+        _up(at(mon, 7, 25), "am", 15, week=2),
     ]
-    am = learner.find_outcome_upload(F.AYA, "am", at(sun, 7, 30), None, timeline)
+    am = learner.find_outcome_upload(F.AYA, "am", 14, None, timeline)
     assert am is timeline[2]  # skips the pre-CP am upload
-    pm = learner.find_outcome_upload(F.AYA, "pm", at(sun, 19, 30), None, timeline)
+    pm = learner.find_outcome_upload(F.AYA, "pm", 14, None, timeline)
     assert pm is timeline[3]  # the Monday week-closing upload
-    # Slot derived from the time when not given.
-    assert learner.find_outcome_upload(F.AYA, None, at(sun, 19, 30), None, timeline) is timeline[3]
-    # Outcome not arrived yet.
-    assert learner.find_outcome_upload(F.AYA, "pm", at(sun, 19, 30), None, timeline[:3]) is None
+    assert learner.find_outcome_upload(F.AYA, "pm", 14, None, timeline[:3]) is None
+    with pytest.raises(ValueError):
+        learner.find_outcome_upload(F.AYA, None, 14, None, timeline)
+
+
+def test_pairing_uses_host_day_for_reports_sent_after_noon_or_midnight():
+    d = datetime.date(2026, 1, 18)
+    nxt = d + datetime.timedelta(days=1)
+    at = lambda day, h, m: datetime.datetime.combine(day, datetime.time(h, m))  # noqa: E731
+    timeline = [
+        _up(at(d, 19, 25), "pm", 14),
+        _up(at(d, 19, 40), "am", 14),
+        _up(at(nxt, 13, 5), "am", 15, week=2),
+    ]
+    assert learner.find_outcome_upload(F.AYA, "pm", 14, None, timeline) is timeline[2]
+    assert learner.find_outcome_upload(F.CP, "am", 14, None, timeline) is timeline[2]
 
 
 def test_pairing_cp_next_morning_and_rel_next_week():
@@ -302,34 +314,35 @@ def test_pairing_cp_next_morning_and_rel_next_week():
     at = lambda day, h, m: datetime.datetime.combine(day, datetime.time(h, m))  # noqa: E731
     nxt = d + datetime.timedelta(days=1)
     timeline = [
-        _up(at(d, 7, 33), "am"),  # before the decision: skipped
-        _up(at(d, 19, 25), "pm"),
-        _up(at(nxt, 7, 25), "am"),
-        _up(at(nxt, 7, 33), "am"),
+        _up(at(d, 7, 33), "am", 10),
+        _up(at(d, 19, 25), "pm", 10),
+        _up(at(nxt, 7, 25), "am", 11),
+        _up(at(nxt, 7, 33), "am", 11),
     ]
-    assert learner.find_outcome_upload(F.CP, "am", at(d, 7, 35), None, timeline) is timeline[2]
+    assert learner.find_outcome_upload(F.CP, "am", 10, None, timeline) is timeline[2]
     mon = datetime.date(2026, 1, 12)
     rel_timeline = [
-        _up(at(mon, 7, 25), "am", week=2),
-        _up(at(mon + datetime.timedelta(days=6), 19, 25), "pm", week=2),
-        _up(at(mon + datetime.timedelta(days=7), 2, 0), "am", week=3),
+        _up(at(mon, 7, 25), "am", 8, week=2),
+        _up(at(mon + datetime.timedelta(days=6), 19, 25), "pm", 14, week=2),
+        _up(at(mon + datetime.timedelta(days=7), 2, 0), "am", 15, week=3),
     ]
-    assert learner.find_outcome_upload(F.REL, None, at(mon, 6, 0), 2, rel_timeline) is rel_timeline[2]
-    assert learner.find_outcome_upload(F.REL, None, at(mon, 6, 0), 2, rel_timeline[:2]) is None
+    assert learner.find_outcome_upload(F.REL, None, None, 2, rel_timeline) is rel_timeline[2]
+    assert learner.find_outcome_upload(F.REL, None, None, 2, rel_timeline[:2]) is None
     with pytest.raises(ValueError):
-        learner.find_outcome_upload(F.REL, None, at(mon, 6, 0), None, rel_timeline)
+        learner.find_outcome_upload(F.REL, None, None, None, rel_timeline)
 
 
 def test_pairing_accepts_orm_rows_and_action_slot(learner_app):
     add_group("d1", datetime.date(2026, 1, 5))
-    up_am = add_upload("d1", datetime.datetime(2026, 1, 13, 7, 25), snapshot(slot="am"))
-    up_pm = add_upload("d1", datetime.datetime(2026, 1, 13, 19, 25), snapshot(slot="pm"))
+    up_am = add_upload("d1", datetime.datetime(2026, 1, 13, 7, 25), snapshot(day_in_study=9, week_in_study=2, slot="am"))
+    up_pm = add_upload("d1", datetime.datetime(2026, 1, 13, 19, 25), snapshot(day_in_study=9, week_in_study=2, slot="pm"))
     act = add_action(
         "d1", F.AYA, 0, datetime.datetime(2026, 1, 13, 7, 30), action=1, action_prob=0.5,
-        design_state={"slot": "am", "names": [], "raw": []},
+        design_state={"slot": "am", "day_in_study": 9, "week_in_study": 2, "names": [], "raw": []},
     )
     assert learner.action_slot(act) == "am"
-    assert learner.find_outcome_upload(F.AYA, learner.action_slot(act), act.request_timestamp, None, [up_am, up_pm]) is up_pm
-    # A no-state fallback has no snapshot: the slot comes from the time of day.
+    assert (learner.action_day(act), learner.action_week(act)) == (9, 2)
+    assert learner.find_outcome_upload(F.AYA, learner.action_slot(act), learner.action_day(act), None, [up_am, up_pm]) is up_pm
+    # A no-state fallback has no snapshot bookkeeping.
     bare = add_action("d1", F.AYA, 1, datetime.datetime(2026, 1, 13, 19, 30), action=0, action_prob=0.5, design_state=None)
-    assert learner.action_slot(bare) == "pm"
+    assert (learner.action_slot(bare), learner.action_day(bare), learner.action_week(bare)) == (None, None, None)

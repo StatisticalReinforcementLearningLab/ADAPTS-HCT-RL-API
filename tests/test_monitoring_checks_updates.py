@@ -46,13 +46,13 @@ MON4 = D(2026, 1, 26)
 def test_b11_yellow_then_red_when_missed_two_weeks_in_a_row(mon_app):
     add_dyad("d1", MON1)
     add_dyad("d2", MON1)
-    add_upload("d1", at(MON2, 2, 0))
+    add_upload("d1", at(MON2, 2, 0), day_in_study=8, week_in_study=2)
     week2 = add_update("u2", at(MON2, 3, 0))
     findings, missing = uploads.b11_for_week(MON2, week2)
     assert missing == ["d2"] and keys(findings) == ["B11:2026-01-12:yellow"]
     assert findings[0].detail["group_ids"] == ["d2"] and findings[0].at == at(MON2, 3, 0)
     assert findings[0].message == "Week-closing upload missing at the 03:00 update for 1 dyads."
-    add_upload("d1", at(MON3, 2, 0))
+    add_upload("d1", at(MON3, 2, 0), day_in_study=15, week_in_study=3)
     week3 = add_update("u3", at(MON3, 3, 0))
     findings, _ = uploads.b11_for_week(MON3, week3)
     assert keys(findings) == ["B11:2026-01-19:red"] and findings[0].severity == "red"
@@ -61,7 +61,7 @@ def test_b11_yellow_then_red_when_missed_two_weeks_in_a_row(mon_app):
 def test_b11_quiet_when_every_active_dyad_uploaded(mon_app):
     add_dyad("d1", MON1)
     add_dyad("late", MON3)  # not active in the week before 01-12
-    add_upload("d1", at(MON2, 1, 0))
+    add_upload("d1", at(MON2, 1, 0), day_in_study=8, week_in_study=2)
     req = add_update("u2", at(MON2, 3, 0))
     assert uploads.b11_for_week(MON2, req) == ([], [])
     assert uploads.check_b11(ctx(at(MON2, 4, 0), at(MON2))) == []
@@ -72,6 +72,15 @@ def test_b11_upload_after_the_update_does_not_count(mon_app):
     req = add_update("u2", at(MON2, 3, 0))
     add_upload("d1", at(MON2, 3, 5))
     assert uploads.b11_for_week(MON2, req)[1] == ["d1"]
+
+
+def test_b11_uses_host_day_and_week_instead_of_timestamp_date(mon_app):
+    add_dyad("d1", MON1)
+    # Timestamp is still Sunday in Detroit, but the host files this as the
+    # Monday week-closing upload.
+    add_upload("d1", at(MON2 - datetime.timedelta(days=1), 23, 30), day_in_study=8, week_in_study=2)
+    req = add_update("u2", at(MON2, 5, 0))
+    assert uploads.b11_for_week(MON2, req) == ([], [])
 
 
 # ---------------------------------------------------------------------- B5
@@ -135,6 +144,17 @@ def test_b8_quiet_with_an_upload_before_each_decision(mon_app):
     assert uploads.check_b8(ctx(at(D(2026, 1, 13), 7, 0))) == []
 
 
+def test_b8_selects_after_midnight_decision_by_host_sent_day(mon_app):
+    add_dyad("d1", MON1)
+    tuesday = D(2026, 1, 13)
+    add_upload("d1", at(tuesday, 0, 25), day_in_study=8, week_in_study=2, slot="pm")
+    add_action(
+        "d1", AYA, 0, at(tuesday, 0, 30),
+        raw_context={"day_in_study": 8, "week_in_study": 2, "slot": "pm"},
+    )
+    assert uploads.check_b8(ctx(at(tuesday, 7, 0))) == []
+
+
 # ---------------------------------------------------------------------- B3
 
 
@@ -160,17 +180,17 @@ def test_b3_quiet_when_missing_rates_are_stable(mon_app):
 # --------------------------------------------------------------------- C11
 
 
-def test_c11_fires_when_no_update_by_0330(mon_app):
+def test_c11_fires_when_no_update_by_0530(mon_app):
     add_dyad("d1", MON1)
-    found = update.check_c11(ctx(at(MON2, 3, 30)))
-    assert keys(found) == ["C11:2026-01-12"] and found[0].at == at(MON2, 3, 30)
+    found = update.check_c11(ctx(at(MON2, 5, 30)))
+    assert keys(found) == ["C11:2026-01-12"] and found[0].at == at(MON2, 5, 30)
 
 
 def test_c11_quiet_when_the_update_arrived_or_none_is_due(mon_app):
     add_dyad("d1", MON1)
-    assert update.check_c11(ctx(at(MON1, 3, 30))) == []  # nobody was active the week before 01-05
-    add_update("u2", at(MON2, 3, 0))
-    assert update.check_c11(ctx(at(MON2, 3, 30))) == []
+    assert update.check_c11(ctx(at(MON1, 5, 30))) == []  # nobody was active the week before 01-05
+    add_update("u2", at(MON2, 5, 0))
+    assert update.check_c11(ctx(at(MON2, 5, 30))) == []
 
 
 # ---------------------------------------------------------------------- C7
@@ -182,21 +202,21 @@ def test_c11_quiet_when_the_update_arrived_or_none_is_due(mon_app):
     (lambda: add_update("u", at(MON2, 5, 30), status="processing"), "running"),
     (lambda: add_update("u", at(MON2, 3, 0), status="failed", error_message="boom"), "failed"),
     (lambda: add_update("u", at(MON2, 3, 0), status="failed", error_message="timeout"), "timeout"),
-    (lambda: add_update("u", at(MON2, 5, 40), published_at_study=at(MON2, 5, 50)), "late"),
-    (lambda: add_update("u", at(MON2, 6, 0)), "never_arrived"),
+    (lambda: add_update("u", at(MON2, 5, 40), published_at_study=at(MON2, 6, 5)), "late"),
+    (lambda: add_update("u", at(MON2, 6, 1)), "never_arrived"),
 ])
 def test_c7_fires_with_the_reason(mon_app, setup, reason):
     add_dyad("d1", MON1)
     setup()
-    found = update.check_c7(ctx(at(MON2, 5, 45)))
+    found = update.check_c7(ctx(at(MON2, 6, 0)))
     assert keys(found) == ["C7:2026-01-12"]
     assert found[0].detail["reason"] == reason and found[0].fallback_used == "F-U2/F-A3"
 
 
-def test_c7_quiet_when_ready_by_0545(mon_app):
+def test_c7_quiet_when_ready_by_0600(mon_app):
     add_dyad("d1", MON1)
     add_update("u", at(MON2, 3, 0), published_at_study=at(MON2, 3, 2))
-    assert update.check_c7(ctx(at(MON2, 5, 45))) == []
+    assert update.check_c7(ctx(at(MON2, 6, 0))) == []
     assert update.week_readiness(MON2)["ready_rid"] == "u"
 
 
@@ -204,7 +224,7 @@ def test_c7_fires_when_an_agent_version_failed(mon_app):
     add_dyad("d1", MON1)
     add_update("u", at(MON2, 3, 0), published_at_study=at(MON2, 3, 2))
     add_version(AYA, MON2, "u", status="failed")
-    found = update.check_c7(ctx(at(MON2, 5, 45)))
+    found = update.check_c7(ctx(at(MON2, 6, 0)))
     assert found and found[0].detail["reason"] == "not_all_published"
 
 

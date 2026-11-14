@@ -428,7 +428,7 @@ class PolicyVersion(db.Model):
 
     ``status`` is ``published`` / ``rejected`` (C3 gate) / ``failed``. A
     published version is eligible for a decision at study time ``t`` in week
-    ``W`` iff ``published_at_study <= min(t, Monday(W) 05:45)``, where
+    ``W`` iff ``published_at_study <= min(t, Monday(W) 06:00)``, where
     ``published_at_study`` is the update's ``request_timestamp`` plus the run's
     wall-clock duration. ``published_at`` is the server wall time.
     """

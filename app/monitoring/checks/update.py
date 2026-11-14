@@ -2,8 +2,8 @@
 The weekly update watch (Monitoring-Spec §5.C, §7 F-U2/F-U4, §9.4): C11, C7,
 C1, C3, C9, C10, the F-U4 timeout and the ``update_weeks`` bookkeeping.
 
-The host calls ``/update`` every Monday at 03:00 (API-Spec §3). Week ``W`` is
-*ready* when, by Monday 05:45 (``MONITOR_WEEK_READY_BY``), an update of the
+The host calls ``/update`` every Monday at 05:00 (API-Spec §3). Week ``W`` is
+*ready* when, by Monday 06:00 (``MONITOR_WEEK_READY_BY``), an update of the
 week completed and published every valid policy (contract D13: a version is
 eligible iff ``published_at_study`` is at or before the deadline). An update
 is *required* for ``W`` when at least one dyad was active in the week before
@@ -50,11 +50,11 @@ WEEK_STUCK = "stuck"
 
 
 def ready_deadline(monday: datetime.date) -> datetime.datetime:
-    return weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 05:45"))
+    return weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 06:00"))
 
 
 def expected_by(monday: datetime.date) -> datetime.datetime:
-    return weekly_deadline(monday, deadline_spec("MONITOR_UPDATE_EXPECTED_BY", "MON 03:30"))
+    return weekly_deadline(monday, deadline_spec("MONITOR_UPDATE_EXPECTED_BY", "MON 05:30"))
 
 
 def timeout_minutes() -> int:
@@ -146,7 +146,7 @@ def mark_timeouts(now: datetime.datetime) -> list[str]:
     F-U4: every update still ``processing`` more than
     ``MONITOR_UPDATE_TIMEOUT_MIN`` minutes after its request time (study clock)
     is marked ``failed`` with ``error_message = "timeout"``; its week becomes
-    ``stuck``. C7 reports it at 05:45; the host may send ``/update`` again.
+    ``stuck``. C7 reports it at 06:00; the host may send ``/update`` again.
     """
     from app.clock import server_now
     from app.models import ModelUpdateRequests
@@ -192,7 +192,7 @@ def sync_running_weeks() -> None:
 
 
 def check_c11(ctx: CheckContext) -> list[Finding]:
-    """C11 (Monday 03:30): no ``/update`` of the week has arrived although one is required."""
+    """C11 (Monday 05:30): no ``/update`` of the week has arrived although one is required."""
     monday = week_monday(ctx.now)
     at = expected_by(monday)
     if not update_required(monday, at) or updates_of_week(monday, until=at):
@@ -264,7 +264,7 @@ _C7_TEXT = {
 
 
 def check_c7(ctx: CheckContext) -> list[Finding]:
-    """C7 (Monday 05:45): week not ready; every agent keeps its last valid policy for the whole week (F-U2/F-A3)."""
+    """C7 (Monday 06:00): week not ready; every agent keeps its last valid policy for the whole week (F-U2/F-A3)."""
     monday = week_monday(ctx.now)
     deadline = ready_deadline(monday)
     if not update_required(monday, deadline):

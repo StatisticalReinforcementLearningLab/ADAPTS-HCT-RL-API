@@ -88,9 +88,14 @@ def day_in_study(consent_start: Any, current: Any) -> int:
     return (as_date(current) - as_date(consent_start)).days + 1
 
 
+def study_date(consent_start: Any, day: int) -> datetime.date:
+    """Calendar date represented by a host-sent ``day_in_study`` value."""
+    return as_date(consent_start) + datetime.timedelta(days=int(day) - 1)
+
+
 def parse_weekly_time(spec: str) -> tuple[int, datetime.time]:
     """
-    Parse a weekly time setting such as ``"MON 05:45"`` (Monitoring-Spec §10)
+    Parse a weekly time setting such as ``"MON 06:00"`` (Monitoring-Spec §10)
     into ``(weekday, time)`` with Monday = 0.
     """
     try:
@@ -99,13 +104,13 @@ def parse_weekly_time(spec: str) -> tuple[int, datetime.time]:
         hour, minute = (int(part) for part in hhmm.split(":"))
         return weekday, datetime.time(hour, minute)
     except Exception as exc:  # noqa: BLE001 - normalize every parse failure
-        raise ValueError(f"weekly time {spec!r} is not of the form 'MON 05:45'.") from exc
+        raise ValueError(f"weekly time {spec!r} is not of the form 'MON 06:00'.") from exc
 
 
-def weekly_deadline(week_monday_date: Any, spec: str = "MON 05:45") -> datetime.datetime:
+def weekly_deadline(week_monday_date: Any, spec: str = "MON 06:00") -> datetime.datetime:
     """
     Naive Detroit-local datetime of ``spec`` in the calendar week starting at
-    ``week_monday_date`` (e.g. the Monday 05:45 policy-publication deadline of
+    ``week_monday_date`` (e.g. the Monday 06:00 policy-publication deadline of
     contract D13; API-Spec §8).
     """
     weekday, at = parse_weekly_time(spec)
@@ -228,6 +233,7 @@ def warmup_reason(
     *,
     n_warm: int | None = None,
     t_warm: int | None = None,
+    current_study_week: int | None = None,
 ) -> str | None:
     """
     Scheduled warm-up reason of a decision (contract D3): ``"cohort"`` (checked
@@ -235,7 +241,12 @@ def warmup_reason(
     """
     if cohort_warmup_active(week_monday(decision_date), groups, n_warm=n_warm):
         return WARMUP_REASON_COHORT
-    if per_dyad_warmup(consent_start, decision_date, t_warm):
+    in_dyad_warmup = (
+        per_dyad_warmup(consent_start, decision_date, t_warm)
+        if current_study_week is None
+        else int(current_study_week) <= int(_hp().t_warm if t_warm is None else t_warm)
+    )
+    if in_dyad_warmup:
         return WARMUP_REASON_WEEK1
     return None
 
@@ -256,6 +267,7 @@ __all__ = [
     "week1_start",
     "study_week",
     "day_in_study",
+    "study_date",
     "parse_weekly_time",
     "weekly_deadline",
     "consent_start_of",

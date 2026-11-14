@@ -9,16 +9,17 @@ uses it divided by the agent's native range maximum ``r_max`` (AYA 2, CP 5,
 REL ``5 + 2 w_adh``) when ``rewards.normalize`` is on (the default), so every
 reward enters the working model on ``[0, 1]``.
 
-Pairing (contract D6), on the dyad's upload timeline, among uploads stamped
-strictly after the decision:
+Pairing (contract D6) uses the host-sent ``slot``, ``day_in_study`` and
+``week_in_study`` values of the decision's snapshot and later snapshots:
 
-- AYA: the first upload whose ``slot`` is opposite to the decision's slot
-  (AM decision -> that evening's ``pm`` upload; PM decision -> the next ``am``
-  upload, which for Sunday PM is the Monday week-closing upload).
-- CP: the first ``am`` upload on a calendar date after the decision's date
-  (its ``cp_diary_mood`` is the diary of the decision's evening).
-- REL: the first upload whose ``week_in_study`` exceeds the decision's study
-  week (normally the next Monday's week-closing upload).
+- AYA AM: the first ``pm`` upload on the same or a later study day.
+- AYA PM: the first ``am`` upload on a later study day.
+- CP: the first ``am`` upload on a later study day.
+- REL: the first upload from a later study week.
+
+No study index is derived from a timestamp. Thus a report filed after noon or
+a previous-day PM decision sent shortly after midnight keeps its host-defined
+slot, day and week.
 
 :func:`find_outcome_upload` is the single implementation of this rule; the
 ``/update`` reward derivation (``app.reward_derivation``) and the learner's
@@ -37,7 +38,6 @@ from app.learner.features import AYA, CP, REL, check_decision_type
 MISSING_TOKEN = "miss"
 SLOT_AM = "am"
 SLOT_PM = "pm"
-DEFAULT_NOON_HOUR = 12
 
 
 def is_missing(value: Any) -> bool:
@@ -169,84 +169,92 @@ def upload_time(upload: Any) -> datetime.datetime:
     return ts
 
 
-def slot_from_time(ts: datetime.datetime, noon_hour: int = DEFAULT_NOON_HOUR) -> str:
-    """``"am"`` before ``noon_hour`` local time, else ``"pm"`` (API-Spec §4.1 ``slot``)."""
-    return SLOT_AM if ts.hour < int(noon_hour) else SLOT_PM
+def _snapshot_values(action: Any, name: str) -> list:
+    """Values of ``name`` carried in a decision's stored snapshot context."""
+    ctx = _field(action, "raw_context") or {}
+    out = []
+    if isinstance(ctx, Mapping):
+        if name in ctx:
+            out.append(ctx[name])
+        design_state = ctx.get("design_state")
+        if isinstance(design_state, Mapping) and name in design_state:
+            out.append(design_state[name])
+    return out
 
 
-def _noon_hour() -> int:
-    try:
-        from flask import current_app, has_app_context
-
-        if has_app_context():
-            return int(current_app.config.get("UPLOAD_SLOT_NOON_HOUR", DEFAULT_NOON_HOUR))
-    except Exception:  # noqa: BLE001 - outside an app the default applies
-        pass
-    return DEFAULT_NOON_HOUR
+def _snapshot_int(action: Any, name: str) -> int | None:
+    for value in _snapshot_values(action, name):
+        number = _number(value)
+        if number is not None and number == int(number):
+            return int(number)
+    return None
 
 
-def action_slot(action: Any) -> str:
+def action_slot(action: Any) -> str | None:
     """
     Slot (``"am"``/``"pm"``) of a decision: the ``slot`` of the snapshot it was
     built from (``raw_context["slot"]`` or ``raw_context["design_state"]["slot"]``),
-    else derived from its ``request_timestamp`` (no-state fallbacks have no
-    snapshot).
+    else ``None`` (no-state fallbacks have no snapshot).
     """
-    ctx = _field(action, "raw_context") or {}
-    if isinstance(ctx, Mapping):
-        slot = ctx.get("slot")
+    for slot in _snapshot_values(action, "slot"):
         if slot in (SLOT_AM, SLOT_PM):
             return slot
-        ds = ctx.get("design_state")
-        if isinstance(ds, Mapping) and ds.get("slot") in (SLOT_AM, SLOT_PM):
-            return ds["slot"]
-    return slot_from_time(upload_time(action), _noon_hour())
+    return None
+
+
+def action_day(action: Any) -> int | None:
+    """Host-sent ``day_in_study`` of a decision's snapshot, else ``None``."""
+    return _snapshot_int(action, "day_in_study")
+
+
+def action_week(action: Any) -> int | None:
+    """Host-sent ``week_in_study`` of a decision's snapshot, else ``None``."""
+    return _snapshot_int(action, "week_in_study")
 
 
 def find_outcome_upload(
     decision_type: str,
     action_slot: str | None,
-    action_time: datetime.datetime,
+    action_day: int | None,
     action_week: int | None,
-    uploads_after: Sequence[Any],
+    uploads: Sequence[Any],
 ):
     """
     The upload that closes a decision's outcome (contract D6), or ``None`` if
     it has not arrived.
 
-    ``uploads_after`` are the dyad's uploads ordered by
-    ``(request_timestamp, id)``; uploads stamped at or before ``action_time``
-    are skipped. Each item is a ``DataUpload`` row or a mapping with ``data``
-    and ``request_timestamp``.
+    ``action_slot`` / ``action_day`` / ``action_week`` come from the snapshot
+    used for the decision. ``uploads`` are ordered by ``(request_timestamp,
+    id)``; the first matching host-sent bookkeeping values wins.
 
-    - AYA (``action_slot`` "am"/"pm"; derived from ``action_time`` if not
-      given): first upload with the opposite ``slot``.
-    - CP: first ``am`` upload on a calendar date after ``action_time``'s date.
+    - AYA: opposite slot on the applicable host study day.
+    - CP: first ``am`` upload on a later host study day.
     - REL (``action_week`` required): first upload with ``week_in_study`` >
       ``action_week``.
     """
     check_decision_type(decision_type)
     if decision_type == AYA:
-        slot = action_slot if action_slot in (SLOT_AM, SLOT_PM) else slot_from_time(action_time, _noon_hour())
-        target = SLOT_PM if slot == SLOT_AM else SLOT_AM
+        if action_slot not in (SLOT_AM, SLOT_PM) or action_day is None:
+            raise ValueError("AYA pairing needs the decision's slot and study day (action_slot, action_day).")
+    elif decision_type == CP and action_day is None:
+        raise ValueError("CP pairing needs the decision's study day (action_day).")
     elif decision_type == REL and action_week is None:
         raise ValueError("REL pairing needs the decision's study week (action_week).")
-    action_date = action_time.date()
-    for up in uploads_after:
-        ts = upload_time(up)
-        if ts <= action_time:
-            continue
+    for up in uploads:
         data = upload_data(up)
-        if decision_type == AYA:
-            if data.get("slot") == target:
-                return up
-        elif decision_type == CP:
-            if data.get("slot") == SLOT_AM and ts.date() > action_date:
-                return up
-        else:
+        if decision_type == REL:
             week = _number(data.get("week_in_study"))
             if week is not None and week > int(action_week):
                 return up
+            continue
+        day = _number(data.get("day_in_study"))
+        if day is None:
+            continue
+        if decision_type == AYA and action_slot == SLOT_AM:
+            if data.get("slot") == SLOT_PM and day >= int(action_day):
+                return up
+        elif data.get("slot") == SLOT_AM and day > int(action_day):
+            return up
     return None
 
 
@@ -259,7 +267,8 @@ __all__ = [
     "compute_reward",
     "upload_data",
     "upload_time",
-    "slot_from_time",
     "action_slot",
+    "action_day",
+    "action_week",
     "find_outcome_upload",
 ]

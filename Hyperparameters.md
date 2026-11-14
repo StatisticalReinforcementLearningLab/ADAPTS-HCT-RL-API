@@ -381,5 +381,5 @@ Operational settings stay in `config.py` and are not hyperparameters: the
 database URI, `RL_ALGORITHM`, the sample-buffer path and seed
 (`SAMPLE_BUFFER_*`), backups, repro snapshots, the clock mode, and fault
 injection. The weekly `/update` is triggered by the host's app server; the
-policy publication deadline (`MONITOR_WEEK_READY_BY`, Monday 05:45) and the
+policy publication deadline (`MONITOR_WEEK_READY_BY`, Monday 06:00) and the
 other monitoring settings are in `Monitoring-Spec.md` §10.

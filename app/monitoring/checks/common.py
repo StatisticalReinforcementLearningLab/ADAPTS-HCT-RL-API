@@ -4,8 +4,8 @@ contract D2, D5, D20).
 
 Every check is ``check(ctx) -> list[Finding]``: a pure function of the database
 and of ``ctx`` (the logical time it runs at and the window it examines). It
-uses host-logical timestamps (``request_timestamp``) for study-calendar logic
-and reads a dyad's consent dates as they were at the time being checked from
+uses the host-sent study day/week for per-dyad calendar logic and reads a
+dyad's consent dates as they were at the time being checked from
 ``group_history`` (§9.6), never from ``groups``.
 """
 
@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from app.monitoring.findings import Finding  # noqa: F401 - re-exported for the check modules
-from app.study_calendar import study_week, week1_start, week_monday
+from app.study_calendar import study_date, study_week, week1_start, week_monday
 
 DECISION_TYPES = ("aya_message", "cp_message", "dyad_game")
 AGENT_ORDER = ("dyad_game", "aya_message", "cp_message")
@@ -234,15 +234,15 @@ def week_closing_close(monday: datetime.date) -> datetime.datetime:
     """
     End of the week-closing window of week ``monday`` (API-Spec §2.3: after
     Sunday midnight, before the Monday update): the first ``/update`` of the
-    week if it arrived by the publication deadline, else Monday 03:00.
+    week if it arrived by the publication deadline, else Monday 05:00.
     """
     from app.study_calendar import weekly_deadline
 
-    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 05:45"))
+    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 06:00"))
     first = updates_of_week(monday, until=deadline)
     if first:
         return first[0].request_timestamp
-    return datetime.datetime.combine(monday, datetime.time(3, 0))
+    return datetime.datetime.combine(monday, datetime.time(5, 0))
 
 
 def update_event_time(req) -> datetime.datetime:
@@ -291,13 +291,26 @@ def actions_between(start: datetime.datetime, end: datetime.datetime, *, include
 
 
 def actions_on_day(day: datetime.date, decision_type: str | None = None) -> list:
+    """Actions assigned to ``day`` by their snapshot's host-sent study day."""
+    from app.learner import action_day
     from app.models import Action
 
-    start, end = day_bounds(day)
-    q = Action.query.filter(Action.request_timestamp >= start, Action.request_timestamp < end)
+    consents = consents_at_logical(day_bounds(day)[1])
+    q = Action.query
     if decision_type is not None:
         q = q.filter(Action.decision_type == decision_type)
-    return q.order_by(Action.request_timestamp.asc(), Action.id.asc()).all()
+    out = []
+    for action in q.order_by(Action.request_timestamp.asc(), Action.id.asc()).all():
+        consent = consents.get(action.group_id)
+        sent_day = action_day(action)
+        assigned = (
+            study_date(consent.start, sent_day)
+            if consent is not None and sent_day is not None
+            else action.request_timestamp.date()
+        )
+        if assigned == day:
+            out.append(action)
+    return out
 
 
 def design_state_of(action) -> dict | None:

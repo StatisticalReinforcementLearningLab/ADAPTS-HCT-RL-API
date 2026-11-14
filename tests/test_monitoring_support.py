@@ -312,7 +312,7 @@ class HttpTrial:
     """
     The API-Spec §3 calling flow through the real routes: per day a pre-AYA-AM,
     pre-CP and pre-AYA-PM upload each followed by its ``/action``; on Mondays a
-    week-closing upload at 02:00, ``/update`` at 03:00 and the pre-``dyad_game``
+    week-closing upload at 02:00, ``/update`` at 05:00 and the pre-``dyad_game``
     upload and REL ``/action`` at 06:00 from study week 1. Values are random
     but valid; game status, burdens and delivery counts follow the actions.
     """

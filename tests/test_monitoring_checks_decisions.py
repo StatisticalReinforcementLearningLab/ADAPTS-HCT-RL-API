@@ -316,6 +316,18 @@ def test_a2_quiet_on_the_calendar_including_partial_week(mon_app):
     assert decisions.check_a2(ctx(at(D(2026, 1, 13), 7, 0))) == []
 
 
+def test_a2_assigns_after_midnight_decision_to_host_sent_day(mon_app):
+    add_dyad("d1", MON1)
+    add_action("d1", AYA, 1, at(MON2, 7, 30))
+    add_action(
+        "d1", AYA, 2, at(D(2026, 1, 13), 0, 30),
+        raw_context={"day_in_study": 8, "week_in_study": 2, "slot": "pm"},
+    )
+    add_action("d1", CP, 1, at(MON2, 7, 35))
+    add_action("d1", REL, 1, at(MON2, 6, 0))
+    assert decisions.check_a2(ctx(at(D(2026, 1, 13), 7, 0))) == []
+
+
 def test_a2_expects_no_rel_decision_in_the_partial_week(mon_app):
     add_dyad("p1", D(2026, 1, 6))  # Tuesday: no partial-week Monday at all
     add_dyad("p2", D(2026, 1, 5) - datetime.timedelta(days=3))  # Friday 01-02: Monday 01-05 is week 1

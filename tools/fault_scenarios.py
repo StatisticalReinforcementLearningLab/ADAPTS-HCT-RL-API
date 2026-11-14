@@ -270,22 +270,22 @@ SCENARIOS: dict[str, FaultScenario] = {
         ),
         FaultScenario(
             name="update_killed",
-            spec_row="the update killed while running -> update marked failed after 30 min; C7 at 05:45",
+            spec_row="the update killed while running -> update marked failed after 30 min; C7 at 06:00",
             description="Monday of calendar week 10: the server is killed right after accepting /update; the host does not resend.",
             expected_items=("C7",),
             allowed_items=("C1", "B5", "AC-201-FALLBACK"),  # a dyad first eligible that week has no earlier policy: F-A3 (B5, AC-201-FALLBACK)
-            server_actions=(ServerAction("kill_during_update", When(10, 0, dt.time(2, 50)), hang_seconds=60.0),),
+            server_actions=(ServerAction("kill_during_update", When(10, 0, dt.time(4, 50)), hang_seconds=60.0),),
             checks=("update_timed_out",),
         ),
         FaultScenario(
             name="update_killed_resend",
             spec_row="the update killed while running -> marked failed after 30 min; no C7 because the host sends it again",
-            description="As update_killed, and the host resends /update at 04:00.",
+            description="As update_killed, and the host resends /update at 05:40.",
             # B5: when the killed run is marked failed, a dyad first eligible that week has no earlier
-            # policy (F-A3) until the 04:00 resend publishes one.
+            # policy (F-A3) until the 05:40 resend publishes one.
             allowed_items=("C1", "B5"),
-            host=(HostFaultSpec("resend_update", when=When(10, 0, dt.time(4, 0))),),
-            server_actions=(ServerAction("kill_during_update", When(10, 0, dt.time(2, 50)), hang_seconds=60.0),),
+            host=(HostFaultSpec("resend_update", when=When(10, 0, dt.time(5, 40))),),
+            server_actions=(ServerAction("kill_during_update", When(10, 0, dt.time(4, 50)), hang_seconds=60.0),),
             checks=("update_timed_out", "no_item:C7"),
         ),
         FaultScenario(
@@ -298,11 +298,11 @@ SCENARIOS: dict[str, FaultScenario] = {
         ),
         FaultScenario(
             name="delay_update",
-            spec_row="update delayed past 05:45 -> C7",
-            description="Monday of calendar week 10: /update sent at 06:00 instead of 03:00 (C11 also fires at 03:30).",
+            spec_row="update delayed past 06:00 -> C7",
+            description="Monday of calendar week 10: /update sent at 06:10 instead of 05:00 (C11 also fires at 05:30).",
             expected_items=("C7",),
             allowed_items=("C11", "B5", "AC-201-FALLBACK"),  # a dyad first eligible that week has no earlier policy: F-A3 (B5, AC-201-FALLBACK)
-            host=(HostFaultSpec("delay_update", when=When(10, 0, dt.time(6, 0))),),
+            host=(HostFaultSpec("delay_update", when=When(10, 0, dt.time(6, 10))),),
         ),
         FaultScenario(
             name="eb_kmax_1",
