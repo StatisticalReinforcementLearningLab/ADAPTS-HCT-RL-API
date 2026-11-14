@@ -519,10 +519,10 @@ def _version(dt, week, status="published", published_at_study=None, rid="r"):
 
 def test_policy_in_force_deadline_rules(learner_app):
     prev = _version("dyad_game", D(2026, 1, 19), published_at_study=DT(2026, 1, 19, 3, 0, 5))
-    late = _version("dyad_game", D(2026, 1, 26), published_at_study=DT(2026, 1, 26, 6, 0))
+    late = _version("dyad_game", D(2026, 1, 26), published_at_study=DT(2026, 1, 26, 6, 0, 1))
     _version("dyad_game", D(2026, 1, 26), status="rejected", published_at_study=None)
     pif = learner.policy_in_force
-    # A version published after Monday 05:45 is never activated midweek (F-U2).
+    # A version published after Monday 06:00 is never activated midweek (F-U2).
     assert pif("dyad_game", DT(2026, 1, 26, 7, 0)).id == prev.id
     assert pif("dyad_game", DT(2026, 1, 30, 7, 0)).id == prev.id
     # It becomes the fallback of the following week if that week has none.

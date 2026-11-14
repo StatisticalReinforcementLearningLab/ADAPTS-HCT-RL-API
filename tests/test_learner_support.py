@@ -6,7 +6,7 @@ The driver writes ``groups``, ``data_uploads``, ``actions`` and ``study_data``
 rows directly through the ORM (not through the routes), following the
 API-Spec §3 calling flow: per day a pre-AYA-AM, pre-CP and pre-AYA-PM upload
 each followed by its decision; on Mondays a week-closing upload at 02:00, the
-weekly update at 03:00 and the pre-``dyad_game`` upload and REL decision at
+weekly update at 05:00 and the pre-``dyad_game`` upload and REL decision at
 06:00 (from study week 1). Decisions use the server-side warm-up rules
 (contract D2/D3), :func:`app.learner.build_design_state` and, outside warm-up,
 :func:`app.learner.learned_probability` (``no_policy`` fallback at 1/2). The
@@ -277,7 +277,6 @@ class MiniTrial:
         """Pair every unscored decision with its outcome upload (stamped by ``as_of``) and write ``study_data``."""
         from app import learner
         from app.models import Action, DataUpload, StudyData
-        from app.study_calendar import week_monday
 
         n = 0
         for action in Action.query.order_by(Action.request_timestamp, Action.id).all():
@@ -288,24 +287,20 @@ class MiniTrial:
             uploads = (
                 DataUpload.query.filter(
                     DataUpload.group_id == action.group_id,
-                    DataUpload.request_timestamp > action.request_timestamp,
                     DataUpload.request_timestamp <= as_of,
                 )
                 .order_by(DataUpload.request_timestamp, DataUpload.id)
                 .all()
             )
-            ds = (action.raw_context or {}).get("design_state") or {}
-            week = ds.get("week_in_study")
+            week = learner.action_week(action)
             out = learner.find_outcome_upload(
-                action.decision_type, learner.action_slot(action), action.request_timestamp, week, uploads
+                action.decision_type, learner.action_slot(action), learner.action_day(action), week, uploads
             )
             if out is None:
                 continue
             level = None
             if action.decision_type == "dyad_game":
-                level, _ = learner.aya_week_mean_level(
-                    action.group_id, week_monday(action.request_timestamp), as_of
-                )
+                level, _ = learner.aya_week_mean_level(action.group_id, week, as_of)
             reward, native = learner.compute_reward(action.decision_type, out.data, aya_week_mean_level=level)
             db.session.add(
                 StudyData(

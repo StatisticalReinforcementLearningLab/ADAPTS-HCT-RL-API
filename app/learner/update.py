@@ -72,6 +72,7 @@ from app.learner.policy import (
     probability_at,
     week_policy,
 )
+from app.learner.rewards import action_week
 from app.learner.state import build_design_state
 from app.learner.validity import check_policy
 
@@ -119,6 +120,7 @@ class _Row:
     a: float
     pi: float
     r: float
+    week: int | None = None
 
 
 @dataclasses.dataclass
@@ -190,7 +192,7 @@ def _load_rows(decision_type: str, dyads: set, week_start: datetime.datetime) ->
             logger.warning("Skipping %s action %s in the fit: %s", decision_type, action.id, exc)
             continue
         rows[action.group_id].append(
-            _Row(action.id, action.request_timestamp, h, f, float(int(action.action)), pi, r)
+            _Row(action.id, action.request_timestamp, h, f, float(int(action.action)), pi, r, action_week(action))
         )
     return dict(rows), skipped
 
@@ -300,12 +302,11 @@ def _successors(ctx: _Context, decision_type: str, group_id: str, last: _Row, pr
     upload = _latest_upload(ctx, group_id, after=last.request_timestamp)
     if upload is None:
         return [], None
-    from app.study_calendar import week_monday
-
     ds = build_design_state(group_id, decision_type, upload, upload.request_timestamp, hp=ctx.hp)
-    # A successor in a later calendar week than the last decision (normally the
-    # week-closing upload) precedes a game decision that has not been drawn.
-    boundary = week_monday(upload.request_timestamp) > week_monday(last.request_timestamp)
+    # A successor in a later host study week (normally the week-closing upload)
+    # precedes a game decision that has not been drawn.
+    upload_week = ds.get("week_in_study")
+    boundary = upload_week is not None and last.week is not None and int(upload_week) > last.week
     meta: dict[str, Any] = {
         "upload_id": upload.id,
         "upload_rid": upload.rid,

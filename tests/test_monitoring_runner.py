@@ -132,13 +132,13 @@ def test_e1_reads_real_resources(mon_app):
 def test_e5_fires_after_a_gap_and_the_missed_checks_are_caught_up(mon_app):
     add_dyad("d1", MON1)
     run_monitoring(now=at(MON2, 3, 0))
-    res = run_monitoring(now=at(MON2, 6, 0))  # down from 03:00 to 06:00: C11 (03:30) and C7 (05:45) caught up
+    res = run_monitoring(now=at(MON2, 6, 0))  # down from 03:00 to 06:00: C11 (05:30) and C7 (06:00) caught up
     new = _new(res)
     assert "E5" in new and "C11" in new and "C7" in new
     e5 = alarms("E5")[0]
     assert e5.detail["gap_minutes"] == 180.0 and e5.detail["alarms_raised_in_catch_up"] >= 2
     c11 = alarms("C11")[0]
-    assert c11.raised_at == at(MON2, 3, 30)  # evaluated at its own scheduled time
+    assert c11.raised_at == at(MON2, 5, 30)  # evaluated at its own scheduled time
 
 
 def test_e5_quiet_on_regular_spacing(mon_app):
@@ -192,7 +192,7 @@ def test_e7_when_a_check_crashes_and_the_run_goes_on(mon_app, monkeypatch):
 
     monkeypatch.setitem(checks.REGISTRY, "A13", dataclasses.replace(checks.REGISTRY["A13"], fn=broken))
     add_dyad("d1", MON1)
-    res = run_monitoring(now=at(MON2, 3, 31), since=at(MON2, 3, 0))
+    res = run_monitoring(now=at(MON2, 5, 31), since=at(MON2, 5, 0))
     assert res["status"] == "error" and res["errors"][0]["item"] == "A13"
     assert "C11" in _new(res)  # the other checks still ran
     e7 = alarms("E7")

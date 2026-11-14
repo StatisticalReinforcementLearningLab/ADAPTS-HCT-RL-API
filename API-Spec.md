@@ -9,7 +9,7 @@ The contract from the host's perspective:
    uploaded snapshot and projects out the subset the requested `decision_type`
    needs. See §2.2.
 3. **`/update` is triggered by the host and issues no callback.** The host's
-   app server calls it weekly (Monday 03:00); the monitoring algorithm on the
+   app server calls it weekly (Monday 05:00); the monitoring algorithm on the
    API server watches for completion via the `model_update_requests` table and
    raises alarms; the API does not POST back. See §2.4.
 4. **Every response uses one common envelope.** A given endpoint returns the
@@ -438,7 +438,7 @@ paired with the `/action` it precedes):
 
 | Day | Uploads, in order | Count |
 |---|---|---|
-| Monday | week-closing (before 03:00) → pre-`dyad_game` → pre-AYA-AM → pre-CP → pre-AYA-PM | 5 |
+| Monday | week-closing (before 05:00) → pre-`dyad_game` → pre-AYA-AM → pre-CP → pre-AYA-PM | 5 |
 | Tue–Sun | pre-AYA-AM → pre-CP → pre-AYA-PM | 3 |
 
 A dyad has no `dyad_game` decision in its partial week (§3), so each
@@ -448,7 +448,7 @@ is the one before the Monday that starts week 1.
 <a id="week-closing-upload"></a>**Week-closing upload (required before every
 `/update`).** For every dyad that had at least one decision in the study week
 that just ended, the host posts one full snapshot **after the last outcome of
-that week is final (end of Sunday) and before the Monday 03:00 `/update`**
+that week is final (end of Sunday) and before the Monday 05:00 `/update`**
 (target window: Monday 00:00–02:45). It is an ordinary `/upload_data` call;
 its field values follow the **pre-`dyad_game` (Monday AM) convention** of
 §4.1 — in particular `previous_med_adherence`, the diary fields, and the
@@ -456,7 +456,7 @@ weekly relationship-quality fields carry the week's final values, and
 `current_game_on` is `"miss"`. The `/update` derives rewards only from uploads
 received before it starts, so this snapshot is what closes the outcomes of the
 week's last decisions and carries the week's relationship-quality survey into
-the fit. A dyad whose week-closing upload is missing at 03:00 has those last
+the fit. A dyad whose week-closing upload is missing at 05:00 has those last
 outcomes deferred to the following week's update, and the monitoring
 algorithm raises an alarm (§2.5).
 
@@ -530,13 +530,17 @@ sent as `"miss"` (or JSON `null`), never omitted, and the learner masks
 `"miss"` via the shared missing-indicator mechanism. The host never tags an
 upload's purpose — the learner does all matching server-side, at `/action` time
 (latest-snapshot lookup) and `/update` time (timeline-based reward derivation).
+The host's `slot`, `day_in_study`, and `week_in_study` assign the snapshot to
+its scheduled decision period; they are not recomputed from the upload
+timestamp. The API only checks that `day_in_study` and `week_in_study` agree
+with each other under the dyad's Monday-aligned study calendar.
 
 **Errors** (guiding principle — uploads are the sole inputs to reward
 derivation, so never silently drop; on any error, correct and re-send):
 
 | `status` | `title` | Cause | Host action |
 |---|---|---|---|
-| `400` | `Invalid Parameter` | missing, unknown, type-invalid, out-of-range, or internally inconsistent field (see §4.1) | send the full snapshot with `"miss"` where needed; correct and re-send |
+| `400` | `Invalid Parameter` | missing, unknown, type-invalid, out-of-range, or internally inconsistent day/week field (see §4.1) | send the full snapshot with `"miss"` where needed; correct and re-send |
 | `404` | `Unknown Group` | unknown `group_id` | register the dyad, then re-send |
 | `500` | `Internal Error` | unexpected API failure | safe to retry; escalate if it repeats |
 | `503` | `Service Unavailable` | database write failure | safe to retry (append-only; a duplicate row is harmless) |
@@ -584,17 +588,17 @@ alarm or API error-log record.
 ### 2.4 `POST /api/v1/update` — re-fit the model
 
 Asynchronous. The **host's app server** triggers it on a fixed schedule
-(weekly, Monday 03:00, §3). The API fits in a background thread; the
+(weekly, Monday 05:00, §3). The API fits in a background thread; the
 **monitoring algorithm** on the API server watches for completion and raises
 alarms if the request does not arrive, fails, or stalls
 (`Monitoring-Spec.md` §5.C).
 
 **Precondition: uploads before update.** The host posts the
 [week-closing upload](#week-closing-upload) for every dyad active in the week
-just ended **before** the Monday 03:00 `/update` is triggered. The update uses
+just ended **before** the Monday 05:00 `/update` is triggered. The update uses
 only `data_uploads` rows received before it starts; an upload that arrives
 later is used at the next weekly update.
-The host does not delay `/update` for a missing dyad: it calls at 03:00 with
+The host does not delay `/update` for a missing dyad: it calls at 05:00 with
 the available data, and monitoring raises B11 for the missing upload.
 
 **No callback.** The monitoring algorithm observes completion by reading the
@@ -611,7 +615,7 @@ Request body (example):
 
 ```json
 {
-  "timestamp": "2026-06-01T03:00:00"
+  "timestamp": "2026-06-01T05:00:00"
 }
 ```
 
@@ -626,7 +630,7 @@ retained for post-study analysis.
   "status": 202,
   "title": "Update Accepted",
   "message": "Model update started.",
-  "server_timestamp": "2026-06-01T03:00:00",
+  "server_timestamp": "2026-06-01T05:00:00",
   "rid": "e999a61c-fb5c-4f01-9942-cb7dbe501013"
 }
 ```
@@ -653,7 +657,7 @@ Error example. `rid` is still present (the API assigns it on receipt), but on a
   "status": 503,
   "title": "Service Unavailable",
   "message": "Could not start the update; retry.",
-  "server_timestamp": "2026-06-01T03:00:00",
+  "server_timestamp": "2026-06-01T05:00:00",
   "rid": "e999a61c-fb5c-4f01-9942-cb7dbe501013"
 }
 ```
@@ -669,7 +673,7 @@ Behavior once accepted:
   stamps `completed_at`) or `failed` (and stamps `error_message`).
 
 **Publication deadline.** A weekly policy is eligible for use only if its fit,
-validation, and atomic publication all finish by Monday 05:45
+validation, and atomic publication all finish by Monday 06:00
 `America/Detroit`. If the deadline is missed, every agent uses its last valid
 policy for the entire study week; an agent with no prior valid policy uses the
 reproducible 50/50 fallback. A late result is retained for diagnosis but never
@@ -750,7 +754,7 @@ Each element of `alarms`:
       "item_id": "XX-000",
       "severity": "yellow",
       "owner": "host",
-      "raised_at": "2026-06-10T05:45:00-04:00",
+      "raised_at": "2026-06-10T06:00:00-04:00",
       "message": "Monitoring item XX-000 fired for dyad_007 (4 occurrences).",
       "detail": {"value": 0.23, "threshold": 0.2, "window": "24h"}
     },
@@ -841,12 +845,12 @@ overlapping active windows).
 dyad active in the week just ended). Host POSTs `/upload_data` with the
 Monday-AM values of §4.1 (`current_game_on = "miss"`), after Sunday's outcomes
 and the weekly relationship-quality survey are final. Must complete before the
-03:00 `/update` (§2.3, [week-closing upload](#week-closing-upload)).
+05:00 `/update` (§2.3, [week-closing upload](#week-closing-upload)).
 
-**Weekly cron — Monday 03:00.** Host POSTs `/update`. The
+**Weekly cron — Monday 05:00.** Host POSTs `/update`. The
 fit runs in a background thread; the monitoring algorithm watches
 `model_update_requests` for completion (§2.4). A new policy must be published
-by 05:45 or the prior valid policy remains active for the entire week.
+by 06:00 or the prior valid policy remains active for the entire week.
 
 **Daily cron — 05:50 and 17:50** (alarm collection; not dyad-scoped). Host
 GETs `/monitor/alarms` and records every returned alarm, keyed by `event_id`,
@@ -941,7 +945,7 @@ for use in tomorrow's AM upload.
 also administers the weekly relationship-quality survey (typically Sunday
 evening), collects the Sunday-evening reports (adherence + AYA diary + CP
 diary), and stages the week-closing upload that it posts after midnight,
-before the Monday 03:00 `/update`.
+before the Monday 05:00 `/update`.
 
 **Partial week** (only if `consent_start_date` is not a Monday). From
 `consent_start_date` through the Sunday before week 1 (`week_in_study = 0`), the
@@ -949,7 +953,7 @@ host runs the daily 07:30, 07:35, and 19:30 calls above but **no** `dyad_game`
 decision: no game is offered, and `current_game_on` and `prior_game_action`
 are `"miss"` at every upload. The API answers every partial-week `/action` with
 a warm-up draw. The partial week's Sunday carries the dyad's first weekly
-survey; its week-closing upload goes out before the next Monday 03:00
+survey; its week-closing upload goes out before the next Monday 05:00
 `/update`, and its first `dyad_game` decision is at 06:00 that Monday, the
 first day of week 1. Week 1 is also a warm-up week (§2.2).
 
@@ -1016,6 +1020,9 @@ stated.
 `consent_start_date` (day 1 = `consent_start_date`, any day of the week).
 - *AM/PM value:* `day = (current_date - consent_start_date).days + 1`.
   Identical at AM and PM on the same calendar day.
+- *Authority:* the host assigns the decision's scheduled day. The API does
+  not recalculate it from the request timestamp, so a PM decision sent shortly
+  after midnight can retain the preceding day.
 - *Missingness:* never missing (always computable).
 
 **`week_in_study`** — `nonneg_int`. Study week of the current date: `0` in
@@ -1027,10 +1034,15 @@ the partial week, then 1-indexed Monday–Sunday weeks (§2.1).
   `week_in_study` increments on Mondays, in step with the weekly `/update` and
   `dyad_game` cadence (§3). A dyad whose `consent_start_date` is a Monday has
   no week 0.
+- *Authority:* the host assigns the week consistently with `day_in_study`;
+  the API does not recalculate either value from the request timestamp.
 - *Missingness:* never missing.
 
 **`slot`** — `slot`.
 - *AM value:* `"am"`. *PM value:* `"pm"`.
+- *Authority:* the host assigns the slot for the decision it labels; the API
+  does not infer it from the request timestamp. In particular, the CP upload
+  remains `"am"` even when that decision occurs after noon.
 - *Missingness:* never missing.
 
 #### AYA-side
@@ -1235,7 +1247,7 @@ for the CP.
 **`current_game_on`** — `binary_or_miss`. Whether the dyad game is on in
 the current week — i.e. the action returned by the most recent
 `dyad_game` /action.
-- *Week-closing upload (Monday before 03:00) and pre-`dyad_game` upload
+- *Week-closing upload (Monday before 05:00) and pre-`dyad_game` upload
   (Monday morning, before the weekly `dyad_game` /action):* `"miss"`. The current week's `dyad_game` action has **not
   yet been decided** at this upload, and the previous week's action is
   captured separately by `prior_game_action` — so `current_game_on` is
@@ -1614,7 +1626,7 @@ last good parameters.
 **Game activity.** Whether game-use analytics should be added to
 `/upload_data`, and whether they are monitoring-only or an RL input, remains
 undecided (§4.1). All other host-contract decisions in this revision are
-fixed: `America/Detroit` is the study timezone; 05:45 is the hard weekly
+fixed: `America/Detroit` is the study timezone; 06:00 is the hard weekly
 policy-publication deadline; alarms are pull-only at 05:50 and 17:50; the API
 has no application-layer API key; and alarm and error records are retained
 without automatic deletion.

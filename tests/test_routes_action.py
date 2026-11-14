@@ -117,6 +117,16 @@ def test_learned_decision_persists_every_column(cohort, app, monkeypatch, poster
     assert row.action == int(u < 0.63) == out["action"]
 
 
+def test_per_dyad_warmup_uses_host_sent_week(cohort):
+    # The request is stamped in calendar week 2, but it belongs to the host's
+    # week 1 (for example, a delayed decision). The decision remains warm-up.
+    assert upload(cohort, GID, "2026-01-13T07:26:00", day_in_study=7, week_in_study=1).status_code == 201
+    out = assert_envelope(post_action(cohort, GID, "aya_message", 99, DECISION_TS), 201)
+    row = _row(out)
+    assert out["warmup"] is True
+    assert row.warmup_reason == "week1"
+
+
 def test_each_agent_consumes_exactly_one_uniform(cohort, app, monkeypatch):
     install_learned_policy(monkeypatch, pi=0.5)
     upload(cohort, GID, "2026-01-12T05:55:00")

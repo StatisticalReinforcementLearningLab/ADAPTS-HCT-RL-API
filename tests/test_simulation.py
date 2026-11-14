@@ -149,7 +149,7 @@ class TestCalendarAndRegistration:
         assert counts["action"] == {"201": sum(expected.values())}
         # /update every Monday once a dyad is registered (registration is Sunday 12:00), incl. the final Monday.
         updates = [r.logical_time for r in result.records if r.endpoint == "update"]
-        assert updates == [dt.datetime.combine(MON + dt.timedelta(days=7 * k), dt.time(3, 0)) for k in range(4)]
+        assert updates == [dt.datetime.combine(MON + dt.timedelta(days=7 * k), dt.time(5, 0)) for k in range(4)]
         pulls = [r.logical_time for r in result.records if r.endpoint == "monitor_alarms"]
         assert all(t.time() in (dt.time(5, 50), dt.time(17, 50)) for t in pulls)
         assert len(pulls) == len(set(pulls)) == 1 + 2 * 21 + 1  # registration day 17:50, 21 days, final Monday 05:50
@@ -551,15 +551,15 @@ class TestHostFaults:
 
     def test_skip_delay_and_resend_updates(self):
         w1, w2, w3 = (dt.date(2026, 11, 9), dt.date(2026, 11, 16), dt.date(2026, 11, 23))
-        faults = HostFaults(skip_updates={w1}, delay_updates={w2: dt.time(6, 0)}, resend_updates={w3: dt.time(4, 0)})
+        faults = HostFaults(skip_updates={w1}, delay_updates={w2: dt.time(6, 0)}, resend_updates={w3: dt.time(5, 40)})
         _, result = _run([MON], 4, faults=faults)
         updates = [r.logical_time for r in result.records if r.endpoint == "update"]
         assert updates == [
-            dt.datetime(2026, 11, 2, 3, 0),
+            dt.datetime(2026, 11, 2, 5, 0),
             dt.datetime(2026, 11, 16, 6, 0),
-            dt.datetime(2026, 11, 23, 3, 0),
-            dt.datetime(2026, 11, 23, 4, 0),
-            dt.datetime(2026, 11, 30, 3, 0),
+            dt.datetime(2026, 11, 23, 5, 0),
+            dt.datetime(2026, 11, 23, 5, 40),
+            dt.datetime(2026, 11, 30, 5, 0),
         ]
         delayed = [r for r in result.records if r.logical_time == dt.datetime(2026, 11, 16, 6, 0)]
         assert [r.endpoint for r in delayed] == ["update", "action"]  # update first, then the 06:00 game
@@ -879,7 +879,7 @@ class TestEndToEndInProcess:
         _, _, result = e2e
         updates = [r for r in result.records if r.endpoint == "update"]
         assert [r.logical_time for r in updates] == [
-            dt.datetime.combine(E2E_START + dt.timedelta(days=7 * k), dt.time(3, 0)) for k in range(5)
+            dt.datetime.combine(E2E_START + dt.timedelta(days=7 * k), dt.time(5, 0)) for k in range(5)
         ]
         assert {r.status for r in updates} == {202}
         pulls = [r for r in result.records if r.endpoint == "monitor_alarms"]

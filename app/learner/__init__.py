@@ -39,7 +39,7 @@ from app.learner import rewards as _rewards
 from app.learner import state as _state
 from app.learner import update as _update
 from app.learner.policy import NoPolicy, PolicyDecision, policy_in_force
-from app.learner.rewards import action_slot, find_outcome_upload, is_missing
+from app.learner.rewards import action_day, action_slot, action_week, find_outcome_upload, is_missing
 from app.learner.state import aya_week_mean_level
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -133,6 +133,8 @@ __all__ = [
     "run_weekly_update",
     "find_outcome_upload",
     "action_slot",
+    "action_day",
+    "action_week",
     "aya_week_mean_level",
     "is_missing",
     "policy_in_force",

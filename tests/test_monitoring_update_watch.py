@@ -6,9 +6,9 @@ The host's calls go through the real routes (``CLOCK_MODE = "host"``: the
 request timestamps are the study clock) and monitoring runs at chosen logical
 times. Two dyads consent on Monday 2026-01-05, so with ``n_warm = 5`` every
 update is a cohort warm-up update that completes without fitting (F-U3).
-The cases: a normal week; no ``/update`` by 03:30; the update cannot start
+The cases: a normal week; no ``/update`` by 05:30; the update cannot start
 (503); the update fails; stuck and resent; stuck and not resent; not ready
-by 05:45; week-closing uploads missing; a week before learning starts; a
+by 06:00; week-closing uploads missing; a week before learning starts; a
 second ``/update`` in the same week (its C5 match is tested with a learning
 trial in ``test_monitoring_trial.py``).
 """
@@ -72,16 +72,16 @@ def test_normal_week(mon_client):
     assert week.missing_closing_uploads == [] and week.c7_raised is False and week.ready_at is not None
 
 
-def test_no_update_by_0330_then_not_ready(mon_client):
+def test_no_update_by_0530_then_not_ready(mon_client):
     _dyads(mon_client)
-    run_monitoring(now=at(W, 3, 31), since=at(W, 0, 0))
+    run_monitoring(now=at(W, 5, 31), since=at(W, 0, 0))
     c11 = alarms("C11")
     assert len(c11) == 1 and (c11[0].severity, c11[0].owner) == ("red", "host")
-    assert c11[0].raised_at == at(W, 3, 30)
+    assert c11[0].raised_at == at(W, 5, 30)
     assert _week().status == "waiting"
-    run_monitoring(now=at(W, 5, 46), since=at(W, 3, 31))
+    run_monitoring(now=at(W, 6, 1), since=at(W, 5, 31))
     c7 = alarms("C7")
-    assert len(c7) == 1 and c7[0].detail["reason"] == "never_arrived" and c7[0].raised_at == at(W, 5, 45)
+    assert len(c7) == 1 and c7[0].detail["reason"] == "never_arrived" and c7[0].raised_at == at(W, 6, 0)
     assert _week().c7_raised is True
     feed = mon_client.get("/api/v1/monitor/alarms").get_json()  # the 05:50 pull carries C11 and C7
     assert {"C11", "C7"} <= {a["item_id"] for a in feed["alarms"]}
@@ -102,7 +102,7 @@ def test_update_cannot_start(mon_client, monkeypatch):
     enqueue = alarms("UP-503-ENQUEUE")
     assert len(enqueue) == 1 and (enqueue[0].severity, enqueue[0].owner) == ("red", "rl")
     assert ModelUpdateRequests.query.count() == 0  # nothing was recorded
-    run_monitoring(now=at(W, 5, 46), since=at(W, 0, 0))
+    run_monitoring(now=at(W, 6, 1), since=at(W, 0, 0))
     assert alarms("C11") and alarms("C7")[0].detail["reason"] == "never_arrived"
 
 
@@ -120,7 +120,7 @@ def test_update_fails(mon_client, monkeypatch):
     assert len(c1) == 1 and c1[0].detail["kind"] == "update_failed" and c1[0].detail["agent"] == "all"
     assert c1[0].source == "after_response" and c1[0].fallback_used == "F-U2"
     assert _week().status == "failed"
-    run_monitoring(now=at(W, 5, 46), since=at(W, 0, 0))
+    run_monitoring(now=at(W, 6, 1), since=at(W, 0, 0))
     assert alarms("C7")[0].detail["reason"] == "failed"
     assert len(alarms("C1")) == 1  # the runner found the same C1
 
@@ -137,7 +137,7 @@ def test_stuck_update_resent_by_the_host(mon_client, monkeypatch):
     assert _week().status == "stuck"
     second = post_update(mon_client, at(W, 3, 40)).get_json()["rid"]
     assert _week().status == "ready" and _week().rids == [first, second]
-    run_monitoring(now=at(W, 5, 46), since=at(W, 3, 35))
+    run_monitoring(now=at(W, 6, 1), since=at(W, 3, 35))
     assert not {"C7", "C11", "C1"} & set(_items())
 
 
@@ -146,28 +146,28 @@ def test_stuck_update_not_resent(mon_client, monkeypatch):
     _no_process(monkeypatch)
     post_update(mon_client, at(W, 3, 0))
     run_monitoring(now=at(W, 3, 35), since=at(W, 0, 0))
-    run_monitoring(now=at(W, 5, 46), since=at(W, 3, 35))
+    run_monitoring(now=at(W, 6, 1), since=at(W, 3, 35))
     c7 = alarms("C7")
     assert len(c7) == 1 and c7[0].detail["reason"] == "timeout"
     assert _week().status == "stuck" and _week().c7_raised is True
     assert alarms("C1") == []  # a timeout is reported by C7, not C1
 
 
-def test_not_ready_by_0545(mon_client, monkeypatch):
+def test_not_ready_by_0600(mon_client, monkeypatch):
     _dyads(mon_client)
     _no_process(monkeypatch)
     post_update(mon_client, at(W, 5, 30))
-    run_monitoring(now=at(W, 5, 46), since=at(W, 0, 0))
-    assert alarms("C11")  # nothing by 03:30
+    run_monitoring(now=at(W, 6, 1), since=at(W, 0, 0))
+    assert alarms("C11") == []  # the 05:30 request arrived by the expected time
     c7 = alarms("C7")
-    assert len(c7) == 1 and c7[0].detail["reason"] == "running"
+    assert len(c7) == 1 and c7[0].detail["reason"] == "timeout"
 
 
 def test_update_arriving_after_the_deadline_is_not_activated(mon_client):
     _dyads(mon_client)
-    rid = post_update(mon_client, at(W, 5, 50)).get_json()["rid"]
+    rid = post_update(mon_client, at(W, 6, 1)).get_json()["rid"]
     assert ModelUpdateRequests.query.filter_by(rid=rid).one().status == "completed"
-    run_monitoring(now=at(W, 6, 0), since=at(W, 0, 0))
+    run_monitoring(now=at(W, 6, 2), since=at(W, 0, 0))
     assert alarms("C7")[0].detail["reason"] == "never_arrived"
     assert _week().status == "failed" and _week().ready_at is None
 

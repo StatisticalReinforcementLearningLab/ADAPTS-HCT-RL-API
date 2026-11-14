@@ -113,10 +113,6 @@ class Config:
     # that compress the calendar).
     CLOCK_MODE = _env_str("CLOCK_MODE", "wall")
 
-    # /upload_data slot boundary: an upload stamped before this local hour is
-    # the "am" upload of its day, at or after it the "pm" upload.
-    UPLOAD_SLOT_NOON_HOUR = 12
-
     # ---- Fault injection (contract D21; testing and simulation only) ----
     # Ignored unless FAULT_INJECTION_ENABLED, which is never True in Config or
     # ProductionConfig. The FAULT_* values may come from env vars of the same
@@ -130,8 +126,8 @@ class Config:
     # ---- Monitoring (Monitoring-Spec §10) ----
     MONITOR_STUDY_TZ = _env_str("MONITOR_STUDY_TZ", "America/Detroit")
     MONITOR_RUN_EVERY_SECONDS = _env_int("MONITOR_RUN_EVERY_SECONDS", 300)
-    MONITOR_UPDATE_EXPECTED_BY = _env_str("MONITOR_UPDATE_EXPECTED_BY", "MON 03:30")  # C11
-    MONITOR_WEEK_READY_BY = _env_str("MONITOR_WEEK_READY_BY", "MON 05:45")  # C7; policy deadline (D13)
+    MONITOR_UPDATE_EXPECTED_BY = _env_str("MONITOR_UPDATE_EXPECTED_BY", "MON 05:30")  # C11
+    MONITOR_WEEK_READY_BY = _env_str("MONITOR_WEEK_READY_BY", "MON 06:00")  # C7; policy deadline (D13)
     MONITOR_UPDATE_TIMEOUT_MIN = _env_int("MONITOR_UPDATE_TIMEOUT_MIN", 30)  # F-U4
     # Expected /action calls per active dyad per day (API-Spec §3; Monitoring-Spec §3):
     # weekdays use Python's numbering (Monday = 0); partial_week says whether

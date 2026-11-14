@@ -94,7 +94,7 @@ UPDATE_LOOKBACK_DAYS = 8
 # C11 and C7 follow the settings MONITOR_UPDATE_EXPECTED_BY / MONITOR_WEEK_READY_BY.
 NIGHTLY_AT = "01:00"        # A4, A10: "every night, for all of yesterday's decisions"
 DAILY_AT = "07:00"          # A2 ("daily 07:00"), A5, A16, B8, B3, D1, G0 ("daily 07:00")
-WEEKLY_MONDAY_AT = "04:00"  # A6, A7, L4: after the week-closing uploads and the 03:00 update
+WEEKLY_MONDAY_AT = "05:15"  # A6, A7, L4: after week-closing uploads and the 05:00 update call
 C5_AT = "TUE 02:00"         # C5: "weekly, Tuesday 02:00"
 D3_AT = "MON 07:00"         # D3: weekly, over the week that just ended
 
@@ -162,8 +162,8 @@ _CHECKS = (
     _check("B8", YELLOW, OWNER_HOST, "Upload missing before a decision", "daily", SOURCE_SCHEDULED),
     _check("B3", GREEN, OWNER_HOST, "Missing-data rate changed", "daily", SOURCE_SCHEDULED),
     # 5.C The weekly update
-    _check("C7", YELLOW, OWNER_RL, "Week not ready at 05:45", "Monday 05:45", SOURCE_SCHEDULED, "F-U2/F-A3"),
-    _check("C11", RED, OWNER_HOST, "Update never arrived", "Monday 03:30", SOURCE_SCHEDULED),
+    _check("C7", YELLOW, OWNER_RL, "Week not ready at 06:00", "Monday 06:00", SOURCE_SCHEDULED, "F-U2/F-A3"),
+    _check("C11", RED, OWNER_HOST, "Update never arrived", "Monday 05:30", SOURCE_SCHEDULED),
     _check("C9", RED, OWNER_RL, "Unapproved settings used",
            "after each decision, at each update, and at start-up", SOURCE_AFTER_RESPONSE),
     _check("C3", YELLOW, OWNER_RL, "Validity of model parameters", "inside the update", SOURCE_BEFORE_PUBLISH,

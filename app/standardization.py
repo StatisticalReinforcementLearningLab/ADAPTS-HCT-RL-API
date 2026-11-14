@@ -104,7 +104,7 @@ def filter_week1_records(records: Iterable[dict]) -> list[dict]:
     """
     Records of the dyad's partial week (`week_in_study` 0) and week 1, the
     baseline window of main_new.tex §5.2. Returns [] until week-1 records
-    exist: /update runs Monday 03:00, before week 1's first decision, so
+    exist: /update runs Monday 05:00, before week 1's first decision, so
     week-1 records first reach an update once week 1 has ended, and baselines
     are never fixed from a partial week alone.
     """

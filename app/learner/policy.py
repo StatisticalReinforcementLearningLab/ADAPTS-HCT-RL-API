@@ -5,7 +5,7 @@ contract D10, D13, D21; main_new.tex §3.6, Algorithm 3 line 12; API-Spec §2.4
 
 A ``policy_versions`` row is *eligible* for a decision at study time ``t`` in
 calendar week ``W`` iff ``status == "published"`` and
-``published_at_study <= min(t, Monday(W) 05:45)`` (the deadline is
+``published_at_study <= min(t, Monday(W) 06:00)`` (the deadline is
 ``MONITOR_WEEK_READY_BY``). The version in force for ``(agent, t)`` is the
 latest eligible version of week ``W`` (a rerun supersedes earlier runs of the
 week), else the latest eligible version of an earlier week (F-U2), else none.
@@ -30,7 +30,7 @@ from app.learner.allocation import agent_probability, contrast_moments
 SNAPSHOT_LOCAL_FIT = "local_fit"
 SNAPSHOT_HYPER = "hyper"
 SNAPSHOT_POSTERIOR = "posterior"
-DEFAULT_DEADLINE = "MON 05:45"
+DEFAULT_DEADLINE = "MON 06:00"
 
 
 class PolicyDecision(NamedTuple):
@@ -62,7 +62,7 @@ def _deadline_spec() -> str:
 
 
 def publication_cutoff(t: datetime.datetime) -> datetime.datetime:
-    """``min(t, Monday(W) 05:45)`` for a decision at ``t`` in week ``W`` (contract D13)."""
+    """``min(t, Monday(W) 06:00)`` for a decision at ``t`` in week ``W`` (contract D13)."""
     from app.study_calendar import week_monday, weekly_deadline
 
     deadline = weekly_deadline(week_monday(t), _deadline_spec())
@@ -96,7 +96,7 @@ def policy_in_force(decision_type: str, t: datetime.datetime):
 
 
 def week_policy(decision_type: str, week_monday_date: datetime.date):
-    """The version in force for the bulk of week ``W``: :func:`policy_in_force` at Monday(W) 05:45."""
+    """The version in force for the bulk of week ``W``: :func:`policy_in_force` at Monday(W) 06:00."""
     from app.study_calendar import weekly_deadline
 
     return policy_in_force(decision_type, weekly_deadline(week_monday_date, _deadline_spec()))

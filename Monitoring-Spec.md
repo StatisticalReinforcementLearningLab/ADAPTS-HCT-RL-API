@@ -118,9 +118,9 @@ field; each alarm instead carries its own `raised_at` time.
 | **π** | the probability of sending (action = 1) for a decision, stored as `actions.action_prob` (`API-Spec.md` §2.2) |
 | **Warm-up decision** | a decision made by a 50/50 coin flip instead of the learned policy (`actions.is_warmup = true`). Reasons: `cohort`, `week1`, `no_state`, `no_policy`, `learner_error`, or `invalid_probability` (§7). |
 | **Week-closing upload** | the one `/upload_data` per dyad, sent between Sunday midnight and the Monday update, that carries the final outcomes of the week that just ended (`API-Spec.md` §2.3) |
-| **Week-w update** | the `/update` call the host's app server makes at Monday 03:00 of week w; it produces the policies used during week w |
+| **Week-w update** | the `/update` call the host's app server makes at Monday 05:00 of week w; it produces the policies used during week w |
 | **Policy version (g, w)** | agent g's posteriors produced by the week-w update. Every learned decision records which version it used. |
-| **Week w is ready** | by Monday 05:45, the week-w update finished and atomically published every valid new policy. If not, last week's policies remain active for the entire week (F-U2); no policy switches midweek. REL actions are always drawn later by `/action`, not by `/update`. |
+| **Week w is ready** | by Monday 06:00, the week-w update finished and atomically published every valid new policy. If not, last week's policies remain active for the entire week (F-U2); no policy switches midweek. REL actions are always drawn later by `/action`, not by `/update`. |
 | **L_min, L_max** | the lowest and highest allowed π, 0.2 and 0.8 by default (`Hyperparameters.md` §3.4) |
 
 ---
@@ -132,7 +132,7 @@ field; each alarm instead carries its own `raised_at` time.
 | Severity | Meaning | Examples | Expected response |
 |---|---|---|---|
 | **Red** | harms the participant's experience, or the scientific value of the trial data | a learned π used during a dyad's first week; a recorded action that does not match its coin flip | written within 5 minutes and collected by the host at 05:50 or 17:50; the host alerts its on-call person and the RL team; fixed the same day, with a written note on what happened |
-| **Yellow** | stops the algorithm from learning or acting correctly, because of a technical (not statistical) failure | the empirical-Bayes optimizer did not converge; week-closing uploads missing; the week's update not ready at 05:45 Monday | appears in the alarm list; looked at within one working day |
+| **Yellow** | stops the algorithm from learning or acting correctly, because of a technical (not statistical) failure | the empirical-Bayes optimizer did not converge; week-closing uploads missing; the week's update not ready at 06:00 Monday | appears in the alarm list; looked at within one working day |
 | **Green** | needs no fix, but must be recorded so the analysis is valid | a variance hitting its floor; a change in how often data are missing; a slow update | appears in the alarm list; kept in the problem log and in `flask monitor report` for the data analyst |
 
 Following [Trella et al.](https://doi.org/10.1038/s41746-026-02669-4), an automatic response that protects the participant
@@ -198,7 +198,7 @@ Each table has two kinds of rows:
 
 | ID | Sev. | Owner | What it checks | Runs | Fallback |
 |---|---|---|---|---|---|
-| **B11** new | yellow | host | **Week-closing upload missing.** When the Monday `/update` arrives, a dyad that was active last week has no upload since Sunday midnight. Its last outcomes of the week are then used one week late. Red if the same dyad misses two weeks in a row. | when the update arrives | — |
+| **B11** new | yellow | host | **Week-closing upload missing.** When the Monday `/update` arrives, a dyad that was active last week has no upload carrying Monday's host-sent `day_in_study` and `week_in_study`. Its last outcomes of the week are then used one week late. Red if the same dyad misses two weeks in a row. | when the update arrives | — |
 | **B5** rev | yellow | rl | **Dyad has no policy this week.** At each update, a dyad past its first week gets no posterior for an agent, so its decisions that week are coin flips (F-A3). Possible causes are a local fit that failed or had no rows for that agent; the cause is in `detail`. (Standardization uses fixed design ranges, `main_new.tex` §5.4, so it cannot be the cause.) | each weekly update | F-A3 |
 | **B8** rev | yellow | host | **Upload missing before a decision.** A decision made by `/action` had no upload from the same dyad in the 30 minutes before it; or a dyad sent more than one week-closing upload in a week. This applies to the Monday REL `/action` like every other decision. | daily | — |
 | **B3** | green | host | **Missing-data rate changed.** For any upload field, the share of uploads marked `"miss"` changed by more than 0.15 compared with the previous 7 days. | daily | — |
@@ -211,20 +211,20 @@ Each table has two kinds of rows:
 | `UD-400-MISSINGFIELD` | yellow | host | **Upload rejected: field missing.** A field from `API-Spec.md` §4.1 is missing. *Host:* send `"miss"` instead of leaving it out. | when the endpoint returns it | F-U1 |
 | `UD-400-TYPE` | yellow | host | **Upload rejected: wrong type.** A value has the wrong type. *Host:* correct it and send again. | when the endpoint returns it | F-U1 |
 | `UD-400-RANGE` | yellow | host | **Upload rejected: value out of range.** A value is outside the range `API-Spec.md` §4.1 allows, including a raw diary or relationship response outside 1–5. *Host:* correct it and send again. | when the endpoint returns it | F-U1 |
-| `UD-400-INCONSISTENT` | yellow | host | **Upload rejected: values do not fit together.** `week_in_study` does not match the Monday-aligned study week defined in `API-Spec.md` §4.1; `day_in_study` does not match the dyad's consent start date and the upload's date; or `slot` (am/pm) does not match the upload's time of day. *Host:* correct it and send again. | when the endpoint returns it | F-U1 |
+| `UD-400-INCONSISTENT` | yellow | host | **Upload rejected: values do not fit together.** `week_in_study` does not match the Monday-aligned week represented by `day_in_study`. The host-sent `day_in_study`, `week_in_study`, and `slot` are not compared with the upload timestamp. *Host:* correct the sent day/week pair and send again. | when the endpoint returns it | F-U1 |
 | `UD-404-GROUP` | yellow | host | **Upload for an unregistered dyad.** *Host:* register the dyad, then send again. | when the endpoint returns it | — |
 | `UD-500-INTERNAL` | yellow | rl | **Upload failed: server error.** *Host:* retry (sending an upload twice is harmless). | when the endpoint returns it | — |
 | `UD-503-DB` | yellow | rl | **Upload not saved.** Database write failed. *Host:* retry. | when the endpoint returns it | — |
 
 ### 5.C The weekly update (`/update`)
 
-The host's app server calls `/update` every Monday at 03:00, after the
+The host's app server calls `/update` every Monday at 05:00, after the
 week-closing uploads; the full Monday schedule is in `API-Spec.md` §3.
 
 | ID | Sev. | Owner | What it checks | Runs | Fallback |
 |---|---|---|---|---|---|
-| **C7** rev | yellow | rl | **Week not ready at 05:45.** At Monday 05:45 the update never arrived (see C11), is still running or timed out, failed, or did not atomically publish all required policy records. The result is not activated later: every agent uses its last valid policy for the entire week (F-U2), and an agent with no prior policy uses F-A3. | Monday 05:45 | F-U2/F-A3 |
-| **C11** new | red | host | **Update never arrived.** No `/update` call for the week has arrived by Monday 03:30, so the host's weekly trigger did not run. | Monday 03:30 | — |
+| **C7** rev | yellow | rl | **Week not ready at 06:00.** At Monday 06:00 the update never arrived (see C11), is still running or timed out, failed, or did not atomically publish all required policy records. The result is not activated later: every agent uses its last valid policy for the entire week (F-U2), and an agent with no prior policy uses F-A3. | Monday 06:00 | F-U2/F-A3 |
+| **C11** new | red | host | **Update never arrived.** No `/update` call for the week has arrived by Monday 05:30, so the host's weekly trigger did not run. | Monday 05:30 | — |
 | **C9** new | red | rl | **Unapproved settings used.** After the settings are frozen, a fit or a decision has no settings fingerprint (hash) recorded, or one that does not match the approved version in force at that time (`hyperparameter_sets`); or the API refused to start because the settings file differs from the frozen set (the start-up check records this before stopping; `Hyperparameters.md` §2.3). | after each decision, at each update, and at start-up | — |
 | **C3** rev | yellow | rl | **Validity of model parameters.** This is the only check allowed to stop publication. For each agent, before its new policy is published, all of the following must hold; otherwise that agent keeps last week's policy (F-U2). (1) Every fitted number is finite: θ̂_{i,w}, Σ̂_{i,w}, Θ̂_w, τ̂²_w, α^EB_{i,w}, Σ^EB_{i,w}. (2) Σ̂_{i,w} and Σ^EB_{i,w} are valid variance matrices: symmetric, with no eigenvalue below −1e-10 × their trace. (3) Each between-dyad variance is at or above its floor: τ̂²_{w,b} ≥ (1 − 1e-6) × floor_b. (4) Pooling did not increase any variance: the smallest eigenvalue of Σ̂^αα_{i,w} − Σ^EB_{i,w} and of Σ̂_{0,w} − Σ^EB_{i,w} is at least −(ε + 1e-10 × trace), where ε is the numerical ridge of `Hyperparameters.md` §4. (5) The number of parameters matches the design: AYA 7 baseline + 4 effect coefficients, CP 6 + 4, REL 7 + 2. Becomes red if the check fails two weeks in a row for the same agent. | inside the update | F-U2 |
 | **C1** rev | yellow | rl | **Update failed or fell back.** Either the update ended with an error, for any reason other than C3 (which reports itself), or the empirical-Bayes optimizer for the between-dyad parameters returned a non-finite value or hit its iteration limit K_max without converging, so last week's (Θ̂, Σ̂₀) were reused (F-U5). `detail` says which, and for which agent. Red after two weeks in a row for the same agent. How often the optimizer falls back over the trial is reported in G0 and `flask monitor report`. | every 5 min; after each update | F-U2, F-U5 |
@@ -460,9 +460,9 @@ and each use is counted in the daily status (G0).
 | **F-A2** | in place (API) | inside `/action`: no state exists, state construction fails, the learner crashes, or A13 finds an impossible π | The API flips a 50/50 coin using its saved random numbers and answers normally (`201`) with `action_prob = 0.5`, `warmup = true`, and `model_param = null`; `state = null` only if no state could be built. It saves the reason and decision. The decision enters learning if its state and outcome are available; otherwise it is omitted and counted. A first no-state use raises `AC-201-NOSTATE`; other causes raise `AC-201-FALLBACK`. |
 | **F-A3** | in place (API) | a learned decision is due, but the dyad has no valid policy for this week (e.g. its local fit failed, B5) | Same saved 50/50 answer as F-A2, with reason `no_policy`. |
 | **F-U1** | in place (API) | an upload is rejected | Its verbatim bytes are kept in a separate access-controlled quarantine table with its validation result and fingerprint. It is never used for decisions or rewards and never copied into an alarm. |
-| **F-U2** | in place (API) | C3 stops an agent's new policy, that agent's fit crashes, or the 05:45 publication deadline is missed | The affected agent keeps its last valid policy for the full week; an agent with no valid prior policy uses F-A3. `policy_versions` records the bundle selected at 05:45. A late fit is retained for diagnosis but cannot become active midweek. REL actions are later drawn by `/action` from the selected REL policy. |
+| **F-U2** | in place (API) | C3 stops an agent's new policy, that agent's fit crashes, or the 06:00 publication deadline is missed | The affected agent keeps its last valid policy for the full week; an agent with no valid prior policy uses F-A3. `policy_versions` records the bundle selected at 06:00. A late fit is retained for diagnosis but cannot become active midweek. REL actions are later drawn by `/action` from the selected REL policy. |
 | **F-U3** | in place (API) | no new decisions to learn from | The fit is skipped and the update is marked finished; counted in G0. |
-| **F-U4** | new (monitoring + host) | the update has run for more than 30 minutes | Monitoring marks it failed (`"timeout"`); C7 reports it at 05:45, and the host may send `/update` again before the deadline. A rerun starts from last week's results. No REL action is drawn during an update, so rerunning consumes no action random number. |
+| **F-U4** | new (monitoring + host) | the update has run for more than 30 minutes | Monitoring marks it failed (`"timeout"`); C7 reports it at 06:00, and the host may send `/update` again before the deadline. A rerun starts from last week's results. No REL action is drawn during an update, so rerunning consumes no action random number. |
 | **F-U5** | part of the algorithm | the empirical-Bayes optimizer returns a non-finite value or hits K_max | As the algorithm specifies: reuse last week's (Θ̂, Σ̂₀), or the prior values at the first update. Each dyad's posterior is still recomputed from this week's data. Reported by C1. |
 
 **Not adopted: a stored backup schedule.** Oralytics sent the app a 70-day
@@ -500,8 +500,8 @@ The response has no monitoring-heartbeat field. `item_id` is a check ID from
       "item_id": "B11",
       "severity": "yellow",
       "owner": "host",
-      "raised_at": "2026-11-02T03:00:10-05:00",
-      "message": "Week-closing upload missing at the 03:00 update for 2 dyads.",
+      "raised_at": "2026-11-02T05:00:10-05:00",
+      "message": "Week-closing upload missing at the 05:00 update for 2 dyads.",
       "detail": {"study_week_monday": "2026-11-02", "group_ids": ["dyad_007", "dyad_011"]}
     },
     {
@@ -525,7 +525,7 @@ own channels, using `severity` and `owner`. Three things follow:
 
 1. **The host collects twice daily.** Calls at 05:50 and 17:50
    `America/Detroit` return the preceding 24 hours. The 05:50 call includes C11
-   (03:30) and C7 (05:45); alarms may otherwise take about 12 hours to reach a
+   (05:30) and C7 (06:00); alarms may otherwise take about 12 hours to reach a
    person.
 2. **The host notices if monitoring stops from G0.** It should alert when a
    day passes without the daily green G0 alarm. E5 records the outage when the
@@ -656,8 +656,8 @@ they live in `config.py` (or environment variables), not in
 |---|---|---|
 | `MONITOR_STUDY_TZ` | `"America/Detroit"` | fixed study timezone, with local daylight-saving transitions |
 | `MONITOR_RUN_EVERY_SECONDS` | `300` | how often the monitoring program runs |
-| `MONITOR_UPDATE_EXPECTED_BY` | `"MON 03:30"` | C11: latest time the host's weekly `/update` (sent at 03:00) should arrive |
-| `MONITOR_WEEK_READY_BY` | `"MON 05:45"` | C7 |
+| `MONITOR_UPDATE_EXPECTED_BY` | `"MON 05:30"` | C11: latest time the host's weekly `/update` (sent at 05:00) should arrive |
+| `MONITOR_WEEK_READY_BY` | `"MON 06:00"` | C7 and the policy-publication cutoff |
 | `MONITOR_UPDATE_TIMEOUT_MIN` | `30` | when a running update is marked failed (F-U4) |
 | `MONITOR_DECISION_CALENDAR` | as in `API-Spec.md` §3: AYA 2 and CP 1 every day; REL 1 on Mondays from week 1 | expected calls per agent per weekday |
 | `MONITOR_MESSAGE_FLOOR` | `0.20` | A7; strict lower bound on the completed-week delivered proportion |
@@ -706,9 +706,9 @@ that no longer exist (`update_id`, `excluded_from_update`, a dictionary-shaped
 1. **Each check.** For every check in §5, one test case where it should fire
    and one where it should not, on a temporary database.
 2. **The update watch, with a simulated clock.** Cases: a normal week; no
-   `/update` by 03:30; the update cannot start (`503`); the update fails; the
+   `/update` by 05:30; the update cannot start (`503`); the update fails; the
    update gets stuck and the host sends it again; it gets stuck and the host
-   does not; the week is not ready by 05:45; week-closing uploads missing; a
+   does not; the week is not ready by 06:00; week-closing uploads missing; a
    week before learning starts; a second `/update` in the same week (C5 must still match).
 3. **Simulated trial with injected faults.** Run `tests/simulate_adapts_hct.py`
    against the running API for 16 calendar weeks with dyads starting on
@@ -726,9 +726,9 @@ that no longer exist (`update_id`, `excluded_from_update`, a dictionary-shaped
 | a saved posterior changed after the decision | A4 |
 | one dyad's week-closing upload withheld | B11 |
 | upload with a diary item of 7 | `UD-400-RANGE`, F-U1 |
-| the update killed while running | update marked failed after 30 min; C7 at 05:45 unless the host sends it again |
+| the update killed while running | update marked failed after 30 min; C7 at 06:00 unless the host sends it again |
 | host skips the Monday `/update` | C11, then C7 |
-| update delayed past 05:45 | C7 |
+| update delayed past 06:00 | C7 |
 | empirical-Bayes optimizer limited to 1 iteration | C1, F-U5 |
 | settings file edited after freezing | C9 (the API refuses to start) |
 | `current_game_on` stuck at last week's value | A15 |
@@ -798,7 +798,7 @@ use 1–5; and REL actions are drawn only by `/action`.
 | C3 total variance > 10 × starting value | C3 | replaced by exact checks of the empirical-Bayes math |
 | C4 MoM / EM convergence, τ² ≤ 1e-6 (green) | C1 + L1 | merged into C1 (the algorithm's empirical-Bayes fallback), with variance-at-floor recorded separately (L1) |
 | C5 rerun gives identical results | C5 | covers the new algorithm's update results; decisions are checked by A4 |
-| C7 week not ready | C7 | 05:45 hard publication deadline; red → yellow because decisions continue on the last valid policy |
+| C7 week not ready | C7 | 06:00 hard publication deadline; red → yellow because decisions continue on the last valid policy |
 | C8 more than one finished update in a week | — | dropped; a second update that stacked an extra learning step would make C5's rerun differ |
 | D1, D3 | same IDs | unchanged |
 | D2 saved copies for reruns | — | dropped; C5 fails anyway if the copy is missing |

@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, request
 
 from app.clock import server_now
 from app.extensions import db
@@ -156,12 +156,7 @@ def upload_data():
             return envelope(404, "Unknown Group", f"group_id {group_id} is not registered.", rid)
 
         consent_start = group.group_info["consent_start_date"]
-        issue = check_snapshot_consistency(
-            body["data"],
-            consent_start,
-            request_timestamp,
-            noon_hour=int(current_app.config.get("UPLOAD_SLOT_NOON_HOUR", 12)),
-        )
+        issue = check_snapshot_consistency(body["data"], consent_start)
         if issue is not None:
             return _reject(rid, raw, body, issue)
 

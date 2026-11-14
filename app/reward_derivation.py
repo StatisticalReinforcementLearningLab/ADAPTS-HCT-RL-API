@@ -37,7 +37,6 @@ from app import learner
 from app.clock import server_now
 from app.extensions import db
 from app.models import Action, DataUpload, Group, StudyData
-from app.study_calendar import study_week, week_monday
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +49,18 @@ OUTCOME_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def find_outcome_upload(consent_start, action: Action, uploads: Sequence[DataUpload]):
+def find_outcome_upload(action: Action, uploads: Sequence[DataUpload]):
     """
     The outcome upload of ``action`` among the dyad's ``uploads`` (ordered by
     ``(request_timestamp, id)``), or ``None`` if it has not arrived. Delegates
-    to the learner's pairing rule (contract D6); the REL decision's study week
-    comes from the study calendar (API-Spec §4.1).
+    to the learner's pairing rule (contract D6) using the host bookkeeping of
+    the snapshot from which the decision was built.
     """
-    week = None
-    if action.decision_type == "dyad_game":
-        week = study_week(consent_start, action.request_timestamp.date())
     return learner.find_outcome_upload(
         action.decision_type,
         learner.action_slot(action),
-        action.request_timestamp,
-        week,
+        learner.action_day(action),
+        learner.action_week(action),
         uploads,
     )
 
@@ -126,7 +122,6 @@ def derive_study_data(app=None, cutoff: datetime.datetime | None = None) -> int:
 
     for group in Group.query.order_by(Group.group_id.asc()).all():
         gid = group.group_id
-        consent_start = group.group_info["consent_start_date"]
         actions = (
             Action.query.filter_by(group_id=gid)
             .order_by(Action.request_timestamp.asc(), Action.id.asc())
@@ -151,7 +146,7 @@ def derive_study_data(app=None, cutoff: datetime.datetime | None = None) -> int:
                 continue  # already finalized; the chosen upload is stable
 
             try:
-                outcome_upload = find_outcome_upload(consent_start, action, uploads)
+                outcome_upload = find_outcome_upload(action, uploads)
                 if outcome_upload is None:
                     continue  # outcome window not filled yet
                 extra: dict = {}
@@ -162,7 +157,7 @@ def derive_study_data(app=None, cutoff: datetime.datetime | None = None) -> int:
                     # update started.
                     week_mean, n_used = learner.aya_week_mean_level(
                         gid,
-                        week_monday(action.request_timestamp),
+                        learner.action_week(action),
                         outcome_upload.request_timestamp,
                         received_by=cutoff,
                     )

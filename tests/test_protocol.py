@@ -25,7 +25,6 @@ from app.protocol import (
     check_snapshot_consistency,
     outcome_from_snapshot,
     project_snapshot,
-    slot_for_time,
     validate_context,
     validate_snapshot,
 )
@@ -88,7 +87,7 @@ def test_api_spec_example_snapshot_is_valid():
     }
     assert check_snapshot(example) is None
     # API-Spec §2.3 example: Wednesday 2026-06-10 07:25 is day 17 / week 3 for a 2026-05-25 consent.
-    assert check_snapshot_consistency(example, "2026-05-25", datetime.datetime(2026, 6, 10, 7, 25)) is None
+    assert check_snapshot_consistency(example, "2026-05-25") is None
 
 
 @pytest.mark.parametrize(
@@ -170,22 +169,20 @@ def test_type_error_endings_match_monitoring_spec_6_4_1():
 # ------------------------------------------------------- cross-field checks
 
 
-def test_consistency_checks_in_order():
+def test_consistency_checks_week_against_host_day():
     ts = datetime.datetime(2026, 1, 7, 7, 25)
     good = snapshot_for("2026-01-05", ts.isoformat())
-    assert check_snapshot_consistency(good, "2026-01-05", ts) is None
-    bad = {**good, "day_in_study": 1, "week_in_study": 4, "slot": "pm"}
-    assert check_snapshot_consistency(bad, "2026-01-05", ts) == (
-        KIND_INCONSISTENT, "day_in_study", "day_in_study does not match timestamp: expected 3, got 1."
-    )
-    bad["day_in_study"] = 3
-    assert check_snapshot_consistency(bad, "2026-01-05", ts) == (
+    assert check_snapshot_consistency(good, "2026-01-05") is None
+    bad = {**good, "day_in_study": 3, "week_in_study": 4}
+    assert check_snapshot_consistency(bad, "2026-01-05") == (
         KIND_INCONSISTENT, "week_in_study", "week_in_study does not match day_in_study: expected 1, got 4."
     )
-    bad["week_in_study"] = 1
-    assert check_snapshot_consistency(bad, "2026-01-05", ts) == (
-        KIND_INCONSISTENT, "slot", "slot does not match timestamp: expected 'am', got 'pm'."
-    )
+
+
+def test_host_day_and_slot_are_not_checked_against_timestamp():
+    snap = snapshot_for("2026-01-05", "2026-01-07T07:25:00")
+    assert check_snapshot_consistency(snap, "2026-01-05") is None
+    assert check_snapshot_consistency({**snap, "day_in_study": 2, "slot": "pm"}, "2026-01-05") is None
 
 
 @pytest.mark.parametrize("weekday_offset", range(7))
@@ -195,7 +192,7 @@ def test_week_follows_monday_weeks_for_any_consent_weekday(weekday_offset):
         current = consent + datetime.timedelta(days=day)
         ts = datetime.datetime.combine(current, datetime.time(19, 30))
         snap = snapshot_for(consent, ts.isoformat())
-        assert check_snapshot_consistency(snap, consent, ts) is None
+        assert check_snapshot_consistency(snap, consent) is None
         week1 = consent + datetime.timedelta(days=-consent.weekday() % 7)
         expected = 0 if current < week1 else (current - week1).days // 7 + 1
         assert snap["week_in_study"] == expected
@@ -208,13 +205,7 @@ def test_week_closing_upload_carries_the_new_week():
     ts = datetime.datetime(2026, 1, 12, 1, 0)
     snap = snapshot_for("2026-01-05", ts.isoformat())
     assert (snap["day_in_study"], snap["week_in_study"], snap["slot"]) == (8, 2, "am")
-    assert check_snapshot_consistency(snap, "2026-01-05", ts) is None
-
-
-def test_slot_boundary():
-    assert slot_for_time(datetime.datetime(2026, 1, 7, 11, 59, 59)) == "am"
-    assert slot_for_time(datetime.datetime(2026, 1, 7, 12, 0)) == "pm"
-    assert slot_for_time(datetime.datetime(2026, 1, 7, 13, 0), noon_hour=14) == "am"
+    assert check_snapshot_consistency(snap, "2026-01-05") is None
 
 
 def test_calendar_reexports_are_the_study_calendar():

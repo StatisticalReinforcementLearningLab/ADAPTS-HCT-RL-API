@@ -213,13 +213,6 @@ def test_first_wrong_field_in_schema_order_is_reported(registered):
 # ---------------------------------------------------- 400: INCONSISTENT
 
 
-def test_day_in_study_must_match_consent_date_and_timestamp(registered):
-    assert_envelope(
-        _post(registered, _body(day_in_study=4)), 400, "Invalid Parameter",
-        "day_in_study does not match timestamp: expected 3, got 4.",
-    )
-
-
 def test_week_in_study_must_match_monday_weeks(registered):
     assert_envelope(
         _post(registered, _body(week_in_study=0)), 400, "Invalid Parameter",
@@ -237,25 +230,15 @@ def test_week_in_study_uses_the_api_spec_monday_formula(client):
     assert_envelope(r, 400, "Invalid Parameter", "week_in_study does not match day_in_study: expected 1, got 2.")
 
 
-def test_slot_must_match_local_time_of_day(registered):
-    assert_envelope(
-        _post(registered, _body(slot="pm")), 400, "Invalid Parameter",
-        "slot does not match timestamp: expected 'am', got 'pm'.",
-    )
-    body = {"group_id": GID, "timestamp": "2026-01-07T19:25:00",
-            "data": snapshot_for("2026-01-05", "2026-01-07T19:25:00", slot="am")}
-    assert_envelope(_post(registered, body), 400, "Invalid Parameter",
-                    "slot does not match timestamp: expected 'pm', got 'am'.")
-
-
-def test_slot_boundary_follows_upload_slot_noon_hour(make_app):
-    app = make_app(UPLOAD_SLOT_NOON_HOUR=14)
-    client = app.test_client()
-    register_group(client, GID)
-    body = {"group_id": GID, "timestamp": "2026-01-07T13:00:00",
-            "data": snapshot_for("2026-01-05", "2026-01-07T13:00:00", noon_hour=14)}
-    assert body["data"]["slot"] == "am"
-    assert_envelope(_post(client, body), 201)
+def test_host_slot_and_day_are_stored_as_sent(registered):
+    late_am = {"group_id": GID, "timestamp": "2026-01-07T13:10:00",
+               "data": snapshot_for("2026-01-05", "2026-01-07T07:25:00")}
+    after_midnight_pm = {"group_id": GID, "timestamp": "2026-01-07T00:40:00",
+                         "data": snapshot_for("2026-01-05", "2026-01-06T19:25:00")}
+    assert_envelope(_post(registered, late_am), 201)
+    assert_envelope(_post(registered, after_midnight_pm), 201)
+    stored = [(u.data["day_in_study"], u.data["slot"]) for u in DataUpload.query.order_by(DataUpload.id)]
+    assert stored == [(3, "am"), (2, "pm")]
 
 
 # ------------------------------------------------------- F-U1 quarantine

@@ -16,7 +16,7 @@ The host contract (API-Spec §2, §3, §4.1) is followed literally:
   00:30 (pre-``dyad_game`` convention, ``current_game_on = "miss"``, final
   delivered counts) for every dyad that had a decision in the week just
   ended.
-- ``/update`` every Monday 03:00 once the study has started (a dyad is
+- ``/update`` every Monday 05:00 once the study has started (a dyad is
   registered); ``GET /monitor/alarms`` at 05:50 and 17:50, deduplicated by
   ``event_id`` (API-Spec §2.5).
 - ``decision_idx``: per-(dyad, agent) counters starting at 1 with the first
@@ -76,7 +76,7 @@ T_REGISTER = dt.time(12, 0)
 T_CLOSING = dt.time(0, 30)
 CLOSING_SPACING = dt.timedelta(seconds=20)
 T_CLOSING_LATEST = dt.time(2, 45)
-T_UPDATE = dt.time(3, 0)
+T_UPDATE = dt.time(5, 0)
 T_GAME = dt.time(6, 0)
 T_AYA_AM = dt.time(7, 30)
 T_CP = dt.time(7, 35)
@@ -1159,7 +1159,7 @@ class HostFaults:
       with ``aya_diary_mood = 7`` (expect 400 ``UD-400-RANGE``), then the
       corrected snapshot.
     - ``skip_updates``: no ``/update`` that Monday; ``delay_updates``: send it
-      at the given time instead of 03:00; ``resend_updates``: an extra
+      at the given time instead of 05:00; ``resend_updates``: an extra
       ``/update`` at the given time (e.g. after a killed update).
     - ``stuck_game``: ``group_id -> week``: in the first study week ``>= week``
       whose game action differs from last week's, the host keeps reporting

@@ -26,7 +26,13 @@ from app.monitoring.checks.common import (
     week_closing_close,
 )
 from app.monitoring.findings import Finding, capped, dedup_key
-from app.study_calendar import cohort_warmup_active, per_dyad_warmup, study_week, weekly_deadline
+from app.study_calendar import (
+    cohort_warmup_active,
+    day_in_study,
+    per_dyad_warmup,
+    study_week,
+    weekly_deadline,
+)
 
 # ------------------------------------------------------------------- B11
 
@@ -39,9 +45,9 @@ def first_update_of_week(monday: datetime.date):
 def missing_closing_uploads(monday: datetime.date, first_req, timeline: ConsentTimeline | None = None) -> list[str]:
     """
     Dyads active in the week before ``monday`` (consent dates as recorded when
-    the week's first ``/update`` arrived) with no upload stamped between
-    Monday 00:00 and that update's ``request_timestamp`` and received before
-    it (Monitoring-Spec B11; API-Spec §2.3 week-closing upload).
+    the week's first ``/update`` arrived) with no upload carrying Monday's
+    host-sent ``day_in_study`` and ``week_in_study`` before that update
+    (Monitoring-Spec B11; API-Spec §2.3 week-closing upload).
     """
     from app.models import DataUpload
 
@@ -51,15 +57,21 @@ def missing_closing_uploads(monday: datetime.date, first_req, timeline: ConsentT
     active = sorted(gid for gid, c in consents.items() if active_in_week(c, prev))
     if not active:
         return []
-    start = datetime.datetime.combine(monday, datetime.time.min)
-    q = DataUpload.query.with_entities(DataUpload.group_id).filter(
+    q = DataUpload.query.filter(
         DataUpload.group_id.in_(active),
-        DataUpload.request_timestamp >= start,
         DataUpload.request_timestamp <= first_req.request_timestamp,
     )
     if first_req.created_at is not None:
         q = q.filter(DataUpload.created_at <= first_req.created_at)
-    have = {gid for (gid,) in q.distinct()}
+    have = set()
+    for upload in q.order_by(DataUpload.request_timestamp, DataUpload.id):
+        consent = consents.get(upload.group_id)
+        data = upload.data or {}
+        if consent is not None and (
+            data.get("day_in_study") == day_in_study(consent.start, monday)
+            and data.get("week_in_study") == study_week(consent.start, monday)
+        ):
+            have.add(upload.group_id)
     return [gid for gid in active if gid not in have]
 
 
@@ -149,7 +161,7 @@ def _eligible_version(decision_type: str, monday: datetime.date, rids: list[str]
     """
     from app.models import PolicyVersion
 
-    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 05:45"))
+    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 06:00"))
     base = PolicyVersion.query.filter(
         PolicyVersion.decision_type == decision_type,
         PolicyVersion.status == PolicyVersion.STATUS_PUBLISHED,

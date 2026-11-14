@@ -20,7 +20,7 @@ second call in the same week), on Tuesday 02:00:
    exactly. Each decision is reproduced separately by A4.
 
 A version is in force for week W only if its ``published_at_study`` is at or
-before Monday 05:45 (contract D13), and the REL version in force feeds the
+before Monday 06:00 (contract D13), and the REL version in force feeds the
 AYA and CP targets; the rerun therefore reproduces the original's side of
 that deadline (on time: zero elapsed time; late: past the deadline).
 """
@@ -136,7 +136,7 @@ def rerun_update(req) -> dict:
     data = _snapshot(req, started)
 
     monday = update_week(req)
-    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 05:45"))
+    deadline = weekly_deadline(monday, deadline_spec("MONITOR_WEEK_READY_BY", "MON 06:00"))
     rel = PolicyVersion.query.filter_by(update_rid=req.rid, decision_type="dyad_game").first()
     late = rel is not None and rel.published_at_study is not None and rel.published_at_study > deadline
     if late:

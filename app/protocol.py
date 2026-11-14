@@ -25,11 +25,10 @@ re-exported here for compatibility.
 
 from __future__ import annotations
 
-import datetime
 import math
 from typing import Any, NamedTuple
 
-from app.study_calendar import day_in_study, study_week, week1_start, week_monday  # noqa: F401 (re-exports, D5)
+from app.study_calendar import day_in_study, study_date, study_week, week1_start, week_monday  # noqa: F401 (re-exports, D5)
 
 DECISION_TYPES = ("aya_message", "cp_message", "dyad_game")
 MISSING_TOKEN = "miss"
@@ -232,46 +231,25 @@ def check_snapshot(data: Any) -> SnapshotIssue | None:
     return None
 
 
-def slot_for_time(local_time: datetime.datetime, noon_hour: int = 12) -> str:
-    """``"am"`` iff the Detroit-local hour is before ``noon_hour`` (``UPLOAD_SLOT_NOON_HOUR``), else ``"pm"``."""
-    return "am" if local_time.hour < int(noon_hour) else "pm"
-
-
-def check_snapshot_consistency(
-    data: dict,
-    consent_start: Any,
-    upload_time: datetime.datetime,
-    noon_hour: int = 12,
-) -> SnapshotIssue | None:
+def check_snapshot_consistency(data: dict, consent_start: Any) -> SnapshotIssue | None:
     """
     Cross-field consistency of a field-valid snapshot (API-Spec §4.1;
-    Monitoring-Spec §6.4 ``UD-400-INCONSISTENT``). ``upload_time`` is the
-    request timestamp in Detroit local time (contract D4). Checks, in order:
+    Monitoring-Spec §6.4 ``UD-400-INCONSISTENT``):
 
-    - ``day_in_study == (date - consent_start_date).days + 1``
-      (``day_in_study does not match timestamp: ...``);
-    - ``week_in_study == study_calendar.study_week(consent_start_date, date)``
+    - ``week_in_study == study_calendar.study_week(consent_start_date, d)``
+      with ``d = consent_start_date + (day_in_study - 1)`` days
       (``week_in_study does not match day_in_study: ...``). This is the
       API-Spec §4.1 Monday-week formula; the Monitoring-Spec §5.B wording
       ``week = floor((day - 1)/7) + 1`` predates Monday-aligned weeks and is
-      not used;
-    - ``slot == "am"`` iff the local hour is before ``noon_hour``
-      (``slot does not match timestamp: ...``).
+      not used.
+
+    The host-sent bookkeeping fields are not compared with the upload
+    timestamp. This permits, for example, a morning report sent after noon or
+    a previous-day PM decision sent shortly after midnight.
 
     Message: ``<field> does not match <other field>: expected <value>, got <value>.``
     """
-    date = upload_time.date()
-
-    expected_day = day_in_study(consent_start, date)
-    if data["day_in_study"] != expected_day:
-        return SnapshotIssue(
-            KIND_INCONSISTENT,
-            "day_in_study",
-            f"day_in_study does not match timestamp: expected {format_value(expected_day)}, "
-            f"got {format_value(data['day_in_study'])}.",
-        )
-
-    expected_week = study_week(consent_start, date)
+    expected_week = study_week(consent_start, study_date(consent_start, data["day_in_study"]))
     if data["week_in_study"] != expected_week:
         return SnapshotIssue(
             KIND_INCONSISTENT,
@@ -280,14 +258,6 @@ def check_snapshot_consistency(
             f"got {format_value(data['week_in_study'])}.",
         )
 
-    expected_slot = slot_for_time(upload_time, noon_hour)
-    if data["slot"] != expected_slot:
-        return SnapshotIssue(
-            KIND_INCONSISTENT,
-            "slot",
-            f"slot does not match timestamp: expected {format_value(expected_slot)}, "
-            f"got {format_value(data['slot'])}.",
-        )
     return None
 
 

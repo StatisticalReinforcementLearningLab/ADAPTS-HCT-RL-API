@@ -973,8 +973,8 @@ def test_production_never_enables_fault_injection():
     assert config.Config.RL_ALGORITHM == os.getenv("RL_ALGORITHM", "inf_lsvi_eb")
     assert config.TestingConfig.RL_ALGORITHM == "inf_lsvi_eb"
     assert config.Config.SAMPLE_BUFFER_UNIFORMS == 200_000
-    assert config.Config.MONITOR_WEEK_READY_BY == os.getenv("MONITOR_WEEK_READY_BY", "MON 05:45")
-    assert config.Config.UPLOAD_SLOT_NOON_HOUR == 12
+    assert config.Config.MONITOR_WEEK_READY_BY == os.getenv("MONITOR_WEEK_READY_BY", "MON 06:00")
+    assert config.Config.MONITOR_UPDATE_EXPECTED_BY == os.getenv("MONITOR_UPDATE_EXPECTED_BY", "MON 05:30")
 
 
 # ===================================================== framework answers (D19)
